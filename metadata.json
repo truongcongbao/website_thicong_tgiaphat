@@ -1,0 +1,6 @@
+{
+  "name": "Trương Gia Phát - Thi Công Trần Thạch Cao & Gỗ Nhựa",
+  "description": "Website giới thiệu dịch vụ thi công trần thạch cao Vĩnh Tường và vách ốp trần nhựa giả gỗ Composite, PVC vân đá. Tích hợp trắc nghiệm gu thẩm mỹ, dự toán chi phí tự động và KTS AI tư vấn.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
