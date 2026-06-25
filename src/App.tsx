@@ -7,6 +7,8 @@ import PriceCalculator from "./components/PriceCalculator";
 import ProjectShowcase from "./components/ProjectShowcase";
 import Chatbox from "./components/Chatbox";
 import FloatingContact from "./components/FloatingContact";
+import BlogSection from "./components/BlogSection.tsx";
+import AdminDashboard from "./components/AdminDashboard.tsx";
 import { WORK_PROCESS } from "./data";
 import { Phone, MessageSquare, MapPin, Mail, Clock, ShieldCheck, Award, Heart, CheckCircle } from "lucide-react";
 
@@ -14,11 +16,13 @@ export default function App() {
   const [activeSection, setActiveSection] = useState<string>("hero");
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
   const [chatPrompt, setChatPrompt] = useState<string>("");
+  const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
+  const [blogRefreshKey, setBlogRefreshKey] = useState<number>(0);
 
   // Scroll spy to highlight active nav link
   useEffect(() => {
     const handleScroll = () => {
-      const sections = ["hero", "styles", "calculator", "projects"];
+      const sections = ["hero", "styles", "calculator", "projects", "blog"];
       const scrollPos = window.scrollY + 120;
 
       for (const sectionId of sections) {
@@ -83,6 +87,7 @@ export default function App() {
         onNavigate={handleNavigate}
         activeSection={activeSection}
         onOpenChat={() => setIsChatOpen(true)}
+        onOpenAdmin={() => setIsAdminOpen(true)}
       />
 
       {/* 2. Hero Section */}
@@ -144,6 +149,9 @@ export default function App() {
           </div>
         </div>
       </section>
+
+      {/* 6.5. Blog & Tips Section (Database backed) */}
+      <BlogSection key={blogRefreshKey} />
 
       {/* 7. Customer Testimonials */}
       <section className="py-20 bg-stone-900 border-t border-stone-800/80">
@@ -337,9 +345,12 @@ export default function App() {
             {/* Col 1: Logo & Vision */}
             <div className="lg:col-span-4 space-y-4">
               <div className="flex items-center gap-2">
-                <div className="h-9 w-9 rounded bg-amber-500 flex items-center justify-center text-stone-950 font-bold text-sm uppercase">
-                  TGP
-                </div>
+                <img
+                  src="/src/assets/images/tgp_logo_1782393737704.jpg"
+                  alt="TRƯƠNG GIA PHÁT Logo"
+                  referrerPolicy="no-referrer"
+                  className="h-10 w-10 rounded-lg object-cover shadow-sm border border-amber-500/20"
+                />
                 <span className="text-base sm:text-lg font-bold tracking-wider text-amber-500 font-sans uppercase">
                   TRƯƠNG GIA PHÁT
                 </span>
@@ -447,6 +458,15 @@ export default function App() {
         externalPrompt={chatPrompt}
         onClearExternalPrompt={handleClearExternalPrompt}
       />
+
+      {/* Admin Dashboard overlay panel */}
+      {isAdminOpen && (
+        <AdminDashboard 
+          onClose={() => setIsAdminOpen(false)} 
+          onPostCreatedOrModified={() => setBlogRefreshKey(prev => prev + 1)}
+          onOpenChatWithPrompt={handleOpenChatWithPrompt}
+        />
+      )}
 
       {/* 11. Floating Zalo & Phone buttons */}
       <FloatingContact onOpenChat={() => setIsChatOpen(true)} />

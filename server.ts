@@ -3,6 +3,11 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { db } from "./src/db/index.ts";
+import { posts, users } from "./src/db/schema.ts";
+import { eq, desc } from "drizzle-orm";
+import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
+import { getOrCreateUser } from "./src/db/users.ts";
 
 dotenv.config();
 
@@ -101,6 +106,163 @@ QUAN TRỌNG: Hãy trả lời cô đọng, súc tích (khoảng 3 đến tối 
     } catch (err) {
       console.error("Gemini server error:", err);
       return res.json({ text: "Chào bạn! Tôi là KTS Minh Khôi. Hệ thống AI đang bận một chút, bạn vui lòng nhắn tin qua Zalo (090.123.4567) hoặc bấm nút Gọi điện để tôi trực tiếp tư vấn và gửi các mẫu thiết kế 3D mới nhất nhé!" });
+    }
+  });
+
+  // --- DATABASE-BACKED API ROUTES FOR TRUONG GIA PHAT POSTS ---
+
+  // Auth User Sync on Login
+  app.post("/api/auth/sync", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userUid = req.user?.uid;
+      const userEmail = req.user?.email || "";
+      if (!userUid) {
+        return res.status(400).json({ error: "Missing user credentials" });
+      }
+      const dbUser = await getOrCreateUser(userUid, userEmail);
+      return res.json({ success: true, user: dbUser });
+    } catch (error: any) {
+      console.error("Auth sync error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Fetch all published posts (Publicly available)
+  app.get("/api/posts", async (req, res) => {
+    try {
+      const allPublished = await db.select()
+        .from(posts)
+        .where(eq(posts.isPublished, true))
+        .orderBy(desc(posts.createdAt));
+      return res.json(allPublished);
+    } catch (error: any) {
+      console.error("Fetch posts error:", error);
+      return res.status(500).json({ error: "Failed to fetch posts" });
+    }
+  });
+
+  // Fetch all posts (authenticated dashboard view)
+  app.get("/api/posts/all", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const allPosts = await db.select()
+        .from(posts)
+        .orderBy(desc(posts.createdAt));
+      return res.json(allPosts);
+    } catch (error: any) {
+      console.error("Fetch all posts error:", error);
+      return res.status(500).json({ error: "Failed to fetch all posts" });
+    }
+  });
+
+  // Create a new post (Admin only)
+  app.post("/api/posts", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userUid = req.user?.uid;
+      if (!userUid) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      
+      const dbUserResult = await db.select().from(users).where(eq(users.uid, userUid));
+      if (dbUserResult.length === 0) {
+        return res.status(404).json({ error: "User profile not found. Please sync account first." });
+      }
+      const dbUser = dbUserResult[0];
+
+      const { title, content, excerpt, imageUrl, videoUrl, category, isPublished } = req.body;
+      if (!title || !content) {
+        return res.status(400).json({ error: "Tiêu đề và nội dung là bắt buộc" });
+      }
+
+      const newPost = await db.insert(posts)
+        .values({
+          title,
+          content,
+          excerpt: excerpt || "",
+          imageUrl: imageUrl || "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=800&q=80",
+          videoUrl: videoUrl || "",
+          category: category || "Tin tức",
+          authorId: dbUser.id,
+          isPublished: isPublished !== undefined ? isPublished : true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning();
+
+      return res.json(newPost[0]);
+    } catch (error: any) {
+      console.error("Create post error:", error);
+      return res.status(500).json({ error: error.message || "Failed to create post" });
+    }
+  });
+
+  // Update a post (Admin only)
+  app.put("/api/posts/:id", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userUid = req.user?.uid;
+      if (!userUid) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const postId = parseInt(req.params.id);
+      if (isNaN(postId)) {
+        return res.status(400).json({ error: "Invalid post ID" });
+      }
+
+      const { title, content, excerpt, imageUrl, videoUrl, category, isPublished } = req.body;
+      if (!title || !content) {
+        return res.status(400).json({ error: "Tiêu đề và nội dung là bắt buộc" });
+      }
+
+      const updated = await db.update(posts)
+        .set({
+          title,
+          content,
+          excerpt: excerpt || "",
+          imageUrl: imageUrl || "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=800&q=80",
+          videoUrl: videoUrl || "",
+          category: category || "Tin tức",
+          isPublished: isPublished !== undefined ? isPublished : true,
+          updatedAt: new Date(),
+        })
+        .where(eq(posts.id, postId))
+        .returning();
+
+      if (updated.length === 0) {
+        return res.status(404).json({ error: "Post not found" });
+      }
+
+      return res.json(updated[0]);
+    } catch (error: any) {
+      console.error("Update post error:", error);
+      return res.status(500).json({ error: error.message || "Failed to update post" });
+    }
+  });
+
+  // Delete a post (Admin only)
+  app.delete("/api/posts/:id", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userUid = req.user?.uid;
+      if (!userUid) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const postId = parseInt(req.params.id);
+      if (isNaN(postId)) {
+        return res.status(400).json({ error: "Invalid post ID" });
+      }
+
+      const deleted = await db.delete(posts)
+        .where(eq(posts.id, postId))
+        .returning();
+
+      if (deleted.length === 0) {
+        return res.status(404).json({ error: "Post not found" });
+      }
+
+      return res.json({ success: true, deleted: deleted[0] });
+    } catch (error: any) {
+      console.error("Delete post error:", error);
+      return res.status(500).json({ error: error.message || "Failed to delete post" });
     }
   });
 

@@ -65,7 +65,8 @@ export const PROJECTS: Project[] = [
     style: "Hiện đại LED",
     budget: "35 Triệu",
     location: "Quận 9, TP. Hồ Chí Minh",
-    description: "Thi công trọn gói hệ thống trần thạch cao phòng khách liền bếp sử dụng tấm thạch cao chống ẩm Vĩnh Tường, khung xương chìm mạ kim loại chịu lực cực tốt. Tích hợp khe hắt sáng LED COB 3 chế độ màu sắc rực rỡ và đèn spotlight âm trần."
+    description: "Thi công trọn gói hệ thống trần thạch cao phòng khách liền bếp sử dụng tấm thạch cao chống ẩm Vĩnh Tường, khung xương chìm mạ kim loại chịu lực cực tốt. Tích hợp khe hắt sáng LED COB 3 chế độ màu sắc rực rỡ và đèn spotlight âm trần.",
+    videoUrl: "https://www.youtube.com/embed/uG67XqZas6U"
   },
   {
     id: "p2",
@@ -76,7 +77,8 @@ export const PROJECTS: Project[] = [
     style: "Composite Luxury",
     budget: "48 Triệu",
     location: "Quận 2, TP. Hồ Chí Minh",
-    description: "Cải tạo mảng tường tivi phòng khách rộng lớn. Sử dụng tấm PVC giả đá cẩm thạch Calacatta dày 3.2mm chống ẩm, hai bên cánh ốp vách lam sóng Composite màu nâu óc chó đậm, bo viền inox mạ vàng gương sang trọng."
+    description: "Cải tạo mảng tường tivi phòng khách rộng lớn. Sử dụng tấm PVC giả đá cẩm thạch Calacatta dày 3.2mm chống ẩm, hai bên cánh ốp vách lam sóng Composite màu nâu óc chó đậm, bo viền inox mạ vàng gương sang trọng.",
+    videoUrl: "https://www.youtube.com/embed/p_Vf0yJ-V_U"
   },
   {
     id: "p3",
@@ -98,7 +100,8 @@ export const PROJECTS: Project[] = [
     style: "Tân cổ điển dát vàng",
     budget: "95 Triệu",
     location: "Quận 7, TP. Hồ Chí Minh",
-    description: "Công trình nghệ thuật trần thạch cao với hoa văn phào chỉ xi măng nhẹ và thạch cao đúc khuôn tinh xảo. Sử dụng mâm trần lớn nâng đèn chùm pha lê, mạ vàng nhũ sắc nét từng đường nét uốn lượn hoàng gia."
+    description: "Công trình nghệ thuật trần thạch cao với hoa văn phào chỉ xi măng nhẹ và thạch cao đúc khuôn tinh xảo. Sử dụng mâm trần lớn nâng đèn chùm pha lê, mạ vàng nhũ sắc nét từng đường nét uốn lượn hoàng gia.",
+    videoUrl: "https://www.youtube.com/embed/dQw4w9WgXcQ"
   },
   {
     id: "p5",
@@ -120,7 +123,8 @@ export const PROJECTS: Project[] = [
     style: "Hiện đại Công sở",
     budget: "185 Triệu",
     location: "Quận 1, TP. Hồ Chí Minh",
-    description: "Công trình tích hợp toàn diện: Trần thạch cao giật cấp lớn hắt sáng tạo điểm nhấn cho khu vực quầy lễ tân, kết hợp hệ trần gỗ nhựa lam sọc trang trí tạo không khí văn phòng xanh, sang trọng và hiện đại."
+    description: "Công trình tích hợp toàn diện: Trần thạch cao giật cấp lớn hắt sáng tạo điểm nhấn cho khu vực quầy lễ tân, kết hợp hệ trần gỗ nhựa lam sọc trang trí tạo không khí văn phòng xanh, sang trọng và hiện đại.",
+    videoUrl: "https://www.youtube.com/embed/p_Vf0yJ-V_U"
   }
 ];
 

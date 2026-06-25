@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
-import { Phone, Compass, Calendar, Menu, X, MessageSquare, ShieldCheck, Home } from "lucide-react";
+import { Phone, Compass, Calendar, Menu, X, MessageSquare, ShieldCheck, Home, BookOpen, Lock, Sparkles } from "lucide-react";
 
 interface HeaderProps {
   onNavigate: (sectionId: string) => void;
   activeSection: string;
   onOpenChat: () => void;
+  onOpenAdmin: () => void;
 }
 
-export default function Header({ onNavigate, activeSection, onOpenChat }: HeaderProps) {
+export default function Header({ onNavigate, activeSection, onOpenChat, onOpenAdmin }: HeaderProps) {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -24,6 +25,7 @@ export default function Header({ onNavigate, activeSection, onOpenChat }: Header
     { id: "styles", label: "Trắc Nghiệm Gu", icon: Compass },
     { id: "calculator", label: "Dự Toán Chi Phí", icon: Calendar },
     { id: "projects", label: "Dự Án Đã Làm", icon: ShieldCheck },
+    { id: "blog", label: "Tin Tức", icon: BookOpen },
   ];
 
   const handleItemClick = (id: string) => {
@@ -44,13 +46,16 @@ export default function Header({ onNavigate, activeSection, onOpenChat }: Header
         {/* Logo */}
         <div 
           onClick={() => handleItemClick("hero")} 
-          className="flex items-center gap-2 cursor-pointer group"
+          className="flex items-center gap-2.5 cursor-pointer group"
         >
-          <div className="h-10 w-10 rounded-lg bg-amber-500 flex items-center justify-center text-stone-950 font-bold text-sm shadow-md group-hover:bg-amber-400 transition-colors">
-            TGP
-          </div>
+          <img
+            src="/src/assets/images/tgp_logo_1782393737704.jpg"
+            alt="TRƯƠNG GIA PHÁT Logo"
+            referrerPolicy="no-referrer"
+            className="h-10 w-10 rounded-lg object-cover shadow-md border border-amber-500/20 group-hover:border-amber-500/40 transition-colors"
+          />
           <div>
-            <span className="block text-sm sm:text-base font-bold tracking-wider text-amber-500 font-sans uppercase">
+            <span className="block text-sm sm:text-base font-bold tracking-wider text-amber-500 font-sans uppercase leading-tight">
               TRƯƠNG GIA PHÁT
             </span>
             <span className="block text-[8px] uppercase tracking-widest text-stone-300">
@@ -92,6 +97,13 @@ export default function Header({ onNavigate, activeSection, onOpenChat }: Header
           >
             <MessageSquare className="h-3.5 w-3.5" />
             Kiến Trúc Sư AI
+          </button>
+          <button
+            onClick={onOpenAdmin}
+            className="p-2 rounded-full bg-stone-850 hover:bg-stone-800 hover:text-amber-500 text-stone-300 transition-all border border-stone-750 hover:border-amber-500/30 cursor-pointer flex items-center justify-center"
+            title="Quản trị"
+          >
+            <Lock className="h-4 w-4" />
           </button>
         </div>
 
@@ -136,23 +148,33 @@ export default function Header({ onNavigate, activeSection, onOpenChat }: Header
               );
             })}
             <div className="h-[1px] bg-stone-800/80 my-4" />
-            <div className="grid grid-cols-2 gap-3 pt-2">
+            <div className="grid grid-cols-3 gap-3 pt-2">
               <a
                 href="tel:0901234567"
-                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-stone-900 border border-stone-800 text-stone-200 text-sm font-medium hover:bg-stone-850"
+                className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-xl bg-stone-900 border border-stone-800 text-stone-200 text-xs font-medium hover:bg-stone-850"
               >
                 <Phone className="h-4 w-4 text-amber-500" />
-                <span>Gọi Ngay</span>
+                <span>Gọi điện</span>
               </a>
               <button
                 onClick={() => {
                   setIsMobileMenuOpen(false);
                   onOpenChat();
                 }}
-                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-amber-500 text-stone-950 text-sm font-bold shadow-lg shadow-amber-500/10 cursor-pointer"
+                className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-xl bg-amber-500 text-stone-950 text-xs font-bold shadow-lg shadow-amber-500/10 cursor-pointer"
               >
                 <MessageSquare className="h-4 w-4" />
-                <span>Trợ Lý AI</span>
+                <span>Trợ lý AI</span>
+              </button>
+              <button
+                onClick={() => {
+                  setIsMobileMenuOpen(false);
+                  onOpenAdmin();
+                }}
+                className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-xl bg-stone-900 border border-stone-800 text-stone-300 text-xs font-semibold hover:border-amber-500/30 transition-all cursor-pointer"
+              >
+                <Lock className="h-4 w-4 text-amber-500" />
+                <span>Quản trị</span>
               </button>
             </div>
           </div>

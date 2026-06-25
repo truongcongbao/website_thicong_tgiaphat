@@ -8,6 +8,7 @@ export interface Project {
   budget: string;
   location: string;
   description: string;
+  videoUrl?: string; // YouTube or video walkthrough link
 }
 
 export interface StyleOption {

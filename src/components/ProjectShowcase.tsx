@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { PROJECTS } from "../data";
 import { Project } from "../types";
-import { Search, MapPin, Minimize, Coins, ExternalLink, Calendar, HelpCircle, X } from "lucide-react";
+import { Search, MapPin, Minimize, Coins, ExternalLink, Calendar, HelpCircle, X, Play, Image as ImageIcon } from "lucide-react";
 
 export default function ProjectShowcase() {
   const [filter, setFilter] = useState<string>("all");
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [activeMedia, setActiveMedia] = useState<"image" | "video">("image");
 
   const categories = [
     { id: "all", label: "Tất Cả Dự Án" },
@@ -32,7 +33,7 @@ export default function ProjectShowcase() {
             Dự Án Thiết Kế & Thi Công Hoàn Thiện
           </h2>
           <p className="text-stone-400 max-w-xl mx-auto text-sm sm:text-base">
-            Hình ảnh thực tế từ các công trình trọn gói chìa khóa trao tay được đội ngũ kiến trúc sư và thợ lành nghề Trương Gia Phát hoàn thiện tỉ mỉ.
+            Hình ảnh & video thực tế từ các công trình trọn gói chìa khóa trao tay được đội ngũ kiến trúc sư và thợ lành nghề Trương Gia Phát hoàn thiện tỉ mỉ.
           </p>
         </div>
 
@@ -58,7 +59,10 @@ export default function ProjectShowcase() {
           {filteredProjects.map((project) => (
             <div
               key={project.id}
-              onClick={() => setSelectedProject(project)}
+              onClick={() => {
+                setSelectedProject(project);
+                setActiveMedia(project.videoUrl ? "video" : "image");
+              }}
               className="group rounded-2xl bg-stone-950 border border-stone-800/80 overflow-hidden shadow-xl hover:border-stone-700 hover:shadow-2xl transition-all duration-300 flex flex-col h-full cursor-pointer"
             >
               {/* Image Frame */}
@@ -70,9 +74,17 @@ export default function ProjectShowcase() {
                   referrerPolicy="no-referrer"
                 />
                 {/* Style badge */}
-                <span className="absolute top-4 left-4 text-[10px] font-bold uppercase tracking-wider bg-stone-950/80 backdrop-blur-md border border-stone-800 text-amber-500 px-3 py-1 rounded-full shadow">
+                <span className="absolute top-4 left-4 text-[10px] font-bold uppercase tracking-wider bg-stone-950/80 backdrop-blur-md border border-stone-800 text-amber-500 px-3 py-1 rounded-full shadow z-10">
                   {project.style}
                 </span>
+
+                {/* Video badge indicator */}
+                {project.videoUrl && (
+                  <span className="absolute top-4 right-4 text-[10px] font-bold uppercase tracking-wider bg-red-600/90 text-white px-2.5 py-1 rounded-full shadow flex items-center gap-1.5 animate-pulse z-10">
+                    <Play className="h-3 w-3 fill-white text-white" />
+                    <span>Xem Video</span>
+                  </span>
+                )}
               </div>
 
               {/* Text Body */}
@@ -106,29 +118,69 @@ export default function ProjectShowcase() {
         {/* Modal Detail Overlay */}
         {selectedProject && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/80 backdrop-blur-md animate-fade-in">
-            <div className="relative w-full max-w-3xl rounded-2xl bg-stone-900 border border-stone-800 overflow-hidden shadow-2xl">
+            <div className="relative w-full max-w-4xl rounded-2xl bg-stone-900 border border-stone-800 overflow-hidden shadow-2xl">
               {/* Close Button */}
               <button
                 onClick={() => setSelectedProject(null)}
-                className="absolute top-4 right-4 z-10 p-2 rounded-full bg-stone-950/60 text-stone-300 hover:text-stone-100 border border-stone-800 hover:bg-stone-900 cursor-pointer"
+                className="absolute top-4 right-4 z-30 p-2 rounded-full bg-stone-950/60 text-stone-300 hover:text-stone-100 border border-stone-800 hover:bg-stone-900 cursor-pointer"
                 aria-label="Đóng"
               >
                 <X className="h-5 w-5" />
               </button>
 
               <div className="grid md:grid-cols-2">
-                {/* Left: Image */}
-                <div className="h-64 md:h-full min-h-[300px]">
-                  <img
-                    src={selectedProject.image}
-                    alt={selectedProject.title}
-                    className="w-full h-full object-cover"
-                    referrerPolicy="no-referrer"
-                  />
+                {/* Left Column: Media Player (Iframe Video / Image) */}
+                <div className="relative h-72 md:h-full min-h-[350px] bg-stone-950 flex flex-col justify-between overflow-hidden">
+                  <div className="relative grow w-full h-full">
+                    {activeMedia === "video" && selectedProject.videoUrl ? (
+                      <iframe
+                        src={selectedProject.videoUrl}
+                        title={selectedProject.title}
+                        className="w-full h-full border-0 absolute inset-0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowFullScreen
+                      />
+                    ) : (
+                      <img
+                        src={selectedProject.image}
+                        alt={selectedProject.title}
+                        className="w-full h-full object-cover absolute inset-0 animate-fade-in"
+                        referrerPolicy="no-referrer"
+                      />
+                    )}
+                  </div>
+
+                  {/* Tabs Selector for Media */}
+                  {selectedProject.videoUrl && (
+                    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-stone-950/90 backdrop-blur-md border border-stone-800 p-1 rounded-full shadow-lg z-20">
+                      <button
+                        onClick={() => setActiveMedia("image")}
+                        className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-all ${
+                          activeMedia === "image"
+                            ? "bg-amber-500 text-stone-950"
+                            : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                        }`}
+                      >
+                        <ImageIcon className="h-3.5 w-3.5" />
+                        <span>Hình Ảnh</span>
+                      </button>
+                      <button
+                        onClick={() => setActiveMedia("video")}
+                        className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-all ${
+                          activeMedia === "video"
+                            ? "bg-red-600 text-white"
+                            : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                        }`}
+                      >
+                        <Play className="h-3.5 w-3.5 fill-current" />
+                        <span>Video Thực Tế</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                {/* Right: Info */}
-                <div className="p-6 sm:p-8 space-y-5 flex flex-col justify-between">
+                {/* Right Column: Info details */}
+                <div className="p-6 sm:p-8 space-y-5 flex flex-col justify-between max-h-[85vh] overflow-y-auto">
                   <div className="space-y-4">
                     <div className="space-y-1">
                       <span className="text-[10px] uppercase font-bold tracking-widest text-amber-500">
