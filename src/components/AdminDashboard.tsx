@@ -1,7 +1,7 @@
 import { useState, useEffect, FormEvent, ChangeEvent } from "react";
 import { 
   LogIn, LogOut, Plus, Edit2, Trash2, LayoutDashboard, FileText, 
-  CheckCircle, Eye, EyeOff, Save, Undo, User as UserIcon, Globe, Image, List, Check, AlertCircle,
+  CheckCircle, Eye, EyeOff, Save, Undo, User as UserIcon, Globe, Image as ImageIcon, List, Check, AlertCircle,
   Sparkles, Menu, X, HelpCircle, Package, ShoppingCart, PhoneCall, Ticket, Settings
 } from "lucide-react";
 import { auth, googleAuthProvider } from "../lib/firebase.ts";
@@ -655,7 +655,7 @@ export default function AdminDashboard({ onClose, onPostCreatedOrModified, onOpe
                               
                               {/* Local file uploader from computer */}
                               <label className="flex items-center gap-1.5 bg-amber-500 text-stone-950 px-2.5 py-1 rounded text-[10px] font-black uppercase cursor-pointer hover:bg-amber-400 transition-all select-none shrink-0">
-                                <Image className="h-3 w-3" />
+                                <ImageIcon className="h-3 w-3" />
                                 <span>Úp ảnh từ máy lên</span>
                                 <input
                                   type="file"

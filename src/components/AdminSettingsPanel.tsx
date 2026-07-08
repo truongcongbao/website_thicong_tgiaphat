@@ -1,5 +1,6 @@
 import { useState, FormEvent, ChangeEvent, useEffect } from "react";
 import { Settings, Save, CheckCircle, Phone, Globe, Image as ImageIcon, Upload, RefreshCw } from "lucide-react";
+import { safeDispatchSimpleEvent } from "../lib/events";
 
 export default function AdminSettingsPanel() {
   const [success, setSuccess] = useState(false);
@@ -63,7 +64,7 @@ export default function AdminSettingsPanel() {
       localStorage.setItem("tgp_custom_logo", logoUrl);
 
       // Trigger custom window event to notify other components instantly
-      window.dispatchEvent(new Event("tgp_settings_updated"));
+      safeDispatchSimpleEvent("tgp_settings_updated");
       
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);

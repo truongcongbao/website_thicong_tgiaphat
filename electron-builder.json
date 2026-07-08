@@ -1,0 +1,41 @@
+{
+  "appId": "com.kiotx.app",
+  "productName": "KiotX",
+  "copyright": "Copyright © 2026 KiotX",
+  "asar": true,
+  "directories": {
+    "output": "dist-desktop"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ]
+  },
+  "mac": {
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["x64", "arm64"]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "shortcutName": "KiotX Desktop",
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true
+  }
+}

@@ -1,0 +1,204 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Information about a product in the store inventory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "barcode": { "type": "string" },
+        "category": { "type": "string" },
+        "costPrice": { "type": "number" },
+        "sellingPrice": { "type": "number" },
+        "stock": { "type": "number" },
+        "minStock": { "type": "number" },
+        "unit": { "type": "string" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["id", "code", "name", "category", "costPrice", "sellingPrice", "stock", "minStock", "unit"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Product categories",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "icon": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Store customers and loyalty members",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "totalSpent": { "type": "number" },
+        "points": { "type": "number" },
+        "tier": { "type": "string", "enum": ["Standard", "Bronze", "Silver", "Gold", "Diamond"] },
+        "avatar": { "type": "string" }
+      },
+      "required": ["id", "name", "phone", "totalSpent", "points", "tier"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Store product suppliers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "companyName": { "type": "string" }
+      },
+      "required": ["id", "name", "phone"]
+    },
+    "OrderItem": {
+      "title": "OrderItem",
+      "description": "An item inside a sales invoice",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string" },
+        "productName": { "type": "string" },
+        "productCode": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unitPrice": { "type": "number" },
+        "discount": { "type": "number" },
+        "total": { "type": "number" }
+      },
+      "required": ["productId", "productName", "productCode", "quantity", "unitPrice", "discount", "total"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Sales receipt and transactional record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "invoiceCode": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerName": { "type": "string" },
+        "items": { "type": "array" },
+        "totalOriginal": { "type": "number" },
+        "discountAmount": { "type": "number" },
+        "totalPayable": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["CASH", "BANK_TRANSFER", "CREDIT_CARD"] },
+        "status": { "type": "string", "enum": ["COMPLETED", "REFUNDED"] },
+        "date": { "type": "string" },
+        "cashierName": { "type": "string" },
+        "pointsEarned": { "type": "number" }
+      },
+      "required": ["id", "invoiceCode", "customerName", "items", "totalOriginal", "discountAmount", "totalPayable", "paymentMethod", "status", "date", "cashierName"]
+    },
+    "Staff": {
+      "title": "Staff",
+      "description": "Employee and system permissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["OWNER", "MANAGER", "CASHIER"] },
+        "phone": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "name", "email", "role", "phone", "active"]
+    },
+    "ShopSetting": {
+      "title": "ShopSetting",
+      "description": "Configuration metadata for the shop profile",
+      "type": "object",
+      "properties": {
+        "shopName": { "type": "string" },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "taxRate": { "type": "number" },
+        "currency": { "type": "string" },
+        "zaloNumber": { "type": "string" },
+        "seoTitle": { "type": "string" },
+        "seoKeywords": { "type": "string" }
+      },
+      "required": ["shopName", "address", "phone", "taxRate", "currency"]
+    },
+    "InventoryAudit": {
+      "title": "InventoryAudit",
+      "description": "Stock checking audit documents",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "auditCode": { "type": "string" },
+        "date": { "type": "string" },
+        "auditorName": { "type": "string" },
+        "items": { "type": "array" },
+        "status": { "type": "string", "enum": ["DRAFT", "COMPLETED"] },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "auditCode", "date", "auditorName", "items", "status"]
+    },
+    "TrialRegistration": {
+      "title": "TrialRegistration",
+      "description": "Customer requests for a 20-day free software trial",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "shopName": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "expireDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["TRIAL_ACTIVE", "EXPIRED", "CONVERTED"] }
+      },
+      "required": ["id", "shopName", "ownerName", "phone", "email", "createdAt", "expireDate", "status"]
+    }
+  },
+  "firestore": {
+    "/kiot_products/{productId}": {
+      "schema": "Product",
+      "description": "Master product database"
+    },
+    "/kiot_categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Product categories"
+    },
+    "/kiot_customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Customer database and profiles"
+    },
+    "/kiot_suppliers/{supplierId}": {
+      "schema": "Supplier",
+      "description": "Supplier contacts list"
+    },
+    "/kiot_invoices/{invoiceId}": {
+      "schema": "Invoice",
+      "description": "Sales transactional invoices"
+    },
+    "/kiot_staff/{staffId}": {
+      "schema": "Staff",
+      "description": "Staff list"
+    },
+    "/kiot_settings/{settingsId}": {
+      "schema": "ShopSetting",
+      "description": "Store configurations"
+    },
+    "/kiot_audits/{auditId}": {
+      "schema": "InventoryAudit",
+      "description": "Inventory stocktaking records"
+    },
+    "/kiot_trials/{trialId}": {
+      "schema": "TrialRegistration",
+      "description": "20-day free software trial requests"
+    }
+  }
+}

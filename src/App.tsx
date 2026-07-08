@@ -1,475 +1,2853 @@
-import { useState, useEffect, FormEvent } from "react";
-import Header from "./components/Header";
-import Hero from "./components/Hero";
-import StyleQuiz from "./components/StyleQuiz";
-import UserPreferences from "./components/UserPreferences";
-import PriceCalculator from "./components/PriceCalculator";
-import ProjectShowcase from "./components/ProjectShowcase";
+import { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import { 
+  Product, Category, Customer, Supplier, Invoice, Staff, ShopSetting, InventoryAudit, PurchaseOrder, CashbookEntry, Project, CashShift, SystemAuditLog, TrialRegistration 
+} from "./types";
+import { 
+  DEFAULT_PRODUCTS, DEFAULT_CATEGORIES, DEFAULT_CUSTOMERS, 
+  DEFAULT_SUPPLIERS, DEFAULT_INVOICES, DEFAULT_STAFF, 
+  DEFAULT_SETTINGS, DEFAULT_AUDITS, DEFAULT_PURCHASE_ORDERS,
+  DEFAULT_CASHBOOK, DEFAULT_PROJECTS, DEFAULT_SYSTEM_LOGS
+} from "./data/kiotDefaults";
+import { db, auth, googleAuthProvider, safeSetDoc, safeDeleteDoc } from "./lib/firebase";
+import { safeDispatchEvent } from "./lib/events";
+import { doc, collection, onSnapshot } from "firebase/firestore";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import KiotDashboard from "./components/KiotDashboard";
+import KiotPOS from "./components/KiotPOS";
+import KiotProducts from "./components/KiotProducts";
+import KiotPartners from "./components/KiotPartners";
+import KiotSettings from "./components/KiotSettings";
+import KiotLogin from "./components/KiotLogin";
+import KiotRestrictedView from "./components/KiotRestrictedView";
+import KiotCashbook from "./components/KiotCashbook";
+import KiotProjects from "./components/KiotProjects";
+import KiotTrialsManager from "./components/KiotTrialsManager";
+import TrialExtensionModal from "./components/TrialExtensionModal";
 import Chatbox from "./components/Chatbox";
-import FloatingContact from "./components/FloatingContact";
-import BlogSection from "./components/BlogSection.tsx";
-import AdminDashboard from "./components/AdminDashboard.tsx";
-import { WORK_PROCESS } from "./data";
-import { Phone, MessageSquare, MapPin, Mail, Clock, ShieldCheck, Award, Heart, CheckCircle } from "lucide-react";
+import ToastContainer from "./components/ToastContainer";
+import { 
+  Activity, LayoutDashboard, ShoppingCart, Package, Users, Settings, 
+  Bot, Clock, Moon, Sun, RefreshCw, LogOut, ShieldCheck, Heart,
+  Wifi, WifiOff, Wallet, Briefcase, Lock, Menu, ChevronLeft, ChevronRight, Sparkles,
+  XCircle, Mail, User
+} from "lucide-react";
+
+function safeGetLocalStorage<T>(key: string, defaultValue: T): T {
+  try {
+    const value = localStorage.getItem(key);
+    if (value) {
+      return JSON.parse(value) as T;
+    }
+  } catch (error) {
+    console.warn(`Error parsing localStorage key "${key}":`, error);
+    try {
+      localStorage.setItem(key, JSON.stringify(defaultValue));
+    } catch (_) {}
+  }
+  return defaultValue;
+}
+
+const formatVNDate = (isoStr?: string) => {
+  if (!isoStr) return "Chưa xác định";
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return isoStr;
+    const pad = (num: number) => String(num).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())} ngày ${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+  } catch (e) {
+    return isoStr;
+  }
+};
 
 export default function App() {
-  const [activeSection, setActiveSection] = useState<string>("hero");
-  const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
-  const [chatPrompt, setChatPrompt] = useState<string>("");
-  const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
-  const [blogRefreshKey, setBlogRefreshKey] = useState<number>(0);
+  // 1. Tab & Theme navigation
+  const [activeTab, setActiveTab] = useState<string>("dashboard");
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [liveTime, setLiveTime] = useState("");
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() => {
+    const saved = localStorage.getItem("kiot_is_sidebar_open");
+    return saved !== null ? saved === "true" : true;
+  });
 
-  // Scroll spy to highlight active nav link
+  const handleToggleSidebar = () => {
+    setIsSidebarOpen(prev => {
+      const next = !prev;
+      localStorage.setItem("kiot_is_sidebar_open", String(next));
+      return next;
+    });
+  };
+
+  // Keep track of deleted trial IDs to prevent synchronization feedback loops
+  const deletedTrialIdsRef = useRef<Set<string>>(new Set());
+
+  // Staff Logged-In State (simulated or via Firebase Google Auth)
+  const [currentStaff, setCurrentStaff] = useState<Staff | null>(() => {
+    try {
+      const local = localStorage.getItem("kiot_current_staff");
+      if (local) {
+        const parsed = JSON.parse(local) as Staff;
+        if (parsed.email?.toLowerCase() === "congbaotruong8@gmail.com") {
+          parsed.role = "OWNER";
+        }
+        return parsed;
+      }
+      return null;
+    } catch (e) {
+      console.warn("Failed to parse current staff, resetting:", e);
+      localStorage.removeItem("kiot_current_staff");
+      return null;
+    }
+  });
+
+  // Offline & Synchronization States
+  const [isOnline, setIsOnline] = useState<boolean>(() => {
+    const saved = localStorage.getItem("kiot_is_online");
+    return saved !== null ? saved === "true" : (typeof window !== "undefined" ? window.navigator.onLine : true);
+  });
+  const [offlineQueue, setOfflineQueue] = useState<Invoice[]>(() => {
+    return safeGetLocalStorage<Invoice[]>("kiot_offline_queue", []);
+  });
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  // Background cloud database connection check state
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<string>(() => {
+    return localStorage.getItem("kiot_last_sync_time") || "";
+  });
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem("kiot_auto_sync_enabled");
+    return saved !== null ? saved === "true" : true;
+  });
+
+  const handleToggleAutoSync = (enabled: boolean) => {
+    setAutoSyncEnabled(enabled);
+    localStorage.setItem("kiot_auto_sync_enabled", String(enabled));
+  };
+
+  const isTabAllowed = (tabId: string, roleOrStaff: string | Staff | null | undefined): boolean => {
+    if (!roleOrStaff) return false;
+    let role = "";
+    let staffMember: Staff | null = null;
+    if (typeof roleOrStaff === "string") {
+      role = roleOrStaff;
+      if (currentStaff && currentStaff.role === role) {
+        staffMember = currentStaff;
+      }
+    } else {
+      staffMember = roleOrStaff;
+      role = roleOrStaff.role;
+    }
+
+    // Bypass permissions for Super Admin
+    if (staffMember && staffMember.email?.toLowerCase() === "congbaotruong8@gmail.com") return true;
+    if (currentStaff && currentStaff.email?.toLowerCase() === "congbaotruong8@gmail.com") return true;
+
+    if (role === "OWNER") return true;
+
+    // Check custom permissions first if we have a staff member
+    if (staffMember && staffMember.permissions) {
+      const perms = staffMember.permissions;
+      if (tabId === "cashbook" && perms.cashbookAccess !== undefined) return perms.cashbookAccess;
+      if (tabId === "dashboard" && perms.reportsAccess !== undefined) return perms.reportsAccess;
+      if (tabId === "pos" && perms.posAccess !== undefined) return perms.posAccess;
+      if (tabId === "products" && perms.productsAccess !== undefined) return perms.productsAccess;
+      if (tabId === "partners" && perms.partnersAccess !== undefined) return perms.partnersAccess;
+      if (tabId === "settings" && perms.settingsAccess !== undefined) return perms.settingsAccess;
+    }
+
+    // Default fallbacks
+    if (role === "MANAGER") {
+      return true;
+    }
+    if (role === "CASHIER") {
+      return tabId === "pos";
+    }
+    return false;
+  };
+
+  // 2. Persistent States (Synchronized with LocalStorage)
+  const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [staff, setStaff] = useState<Staff[]>([]);
+  const [settings, setSettings] = useState<ShopSetting | null>(null);
+  const [audits, setAudits] = useState<InventoryAudit[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
+  const [cashbook, setCashbook] = useState<CashbookEntry[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [cashShifts, setCashShifts] = useState<CashShift[]>([]);
+  const [systemLogs, setSystemLogs] = useState<SystemAuditLog[]>([]);
+
+  // 2a. Trial-SaaS Management & Local Countdown states
+  const [trialRegistrations, setTrialRegistrations] = useState<TrialRegistration[]>([]);
+  const [trialInfo, setTrialInfo] = useState<TrialRegistration | null>(() => {
+    try {
+      const localTrial = localStorage.getItem("kiot_trial_info");
+      return localTrial ? JSON.parse(localTrial) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [trialDaysLeft, setTrialDaysLeft] = useState<number | null>(null);
+  const [isOpenTrialModal, setIsOpenTrialModal] = useState(false);
+  const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
+  const [resetType, setResetType] = useState<"hard" | "selective">("hard");
+  const [selectedCheckpoint, setSelectedCheckpoint] = useState<"registration" | "today" | "yesterday" | "1hour" | "custom">("registration");
+  const [customResetDateTime, setCustomResetDateTime] = useState<string>(() => {
+    const now = new Date();
+    const tzOffset = now.getTimezoneOffset() * 60000;
+    return new Date(now.getTime() - tzOffset).toISOString().slice(0, 16);
+  });
+
+  // 3. Initialize data when trialInfo changes (or on mount)
   useEffect(() => {
-    const handleScroll = () => {
-      const sections = ["hero", "styles", "calculator", "projects", "blog"];
-      const scrollPos = window.scrollY + 120;
+    const prefix = trialInfo ? `kiot_trial_${trialInfo.id}_` : "kiot_";
+    
+    // For trial stores (buyers), start completely fresh/empty ([]) as requested!
+    // For standard demo, load pre-populated default mock records for immediate test.
+    const prods = safeGetLocalStorage<Product[]>(`${prefix}products`, trialInfo ? [] : DEFAULT_PRODUCTS);
+    setProducts(prods);
 
-      for (const sectionId of sections) {
-        const el = document.getElementById(sectionId);
-        if (el) {
-          const top = el.offsetTop;
-          const height = el.offsetHeight;
-          if (scrollPos >= top && scrollPos < top + height) {
-            setActiveSection(sectionId);
-            break;
+    const cats = safeGetLocalStorage<Category[]>(`${prefix}categories`, trialInfo ? [] : DEFAULT_CATEGORIES);
+    setCategories(cats);
+
+    const custs = safeGetLocalStorage<Customer[]>(`${prefix}customers`, trialInfo ? [] : DEFAULT_CUSTOMERS);
+    setCustomers(custs);
+
+    const sups = safeGetLocalStorage<Supplier[]>(`${prefix}suppliers`, trialInfo ? [] : DEFAULT_SUPPLIERS);
+    setSuppliers(sups);
+
+    const invs = safeGetLocalStorage<Invoice[]>(`${prefix}invoices`, trialInfo ? [] : DEFAULT_INVOICES);
+    setInvoices(invs);
+
+    // Seed the trial owner staff dynamically if they are logged in and staff list is empty
+    let defaultStaffList: Staff[] = trialInfo ? [] : DEFAULT_STAFF;
+    if (trialInfo) {
+      const currentStaffLocal = localStorage.getItem("kiot_current_staff");
+      if (currentStaffLocal) {
+        try {
+          const parsedStaff = JSON.parse(currentStaffLocal) as Staff;
+          defaultStaffList = [parsedStaff];
+        } catch (e) {}
+      }
+    }
+    const stf = safeGetLocalStorage<Staff[]>(`${prefix}staff`, defaultStaffList);
+    setStaff(stf);
+
+    let trialDefaultSettings = DEFAULT_SETTINGS;
+    if (trialInfo) {
+      trialDefaultSettings = {
+        ...DEFAULT_SETTINGS,
+        shopName: trialInfo.shopName,
+        address: trialInfo.address || "Đang dùng thử KiotX",
+        phone: trialInfo.phone
+      };
+    }
+    const sett = safeGetLocalStorage<ShopSetting>(`${prefix}settings`, trialDefaultSettings);
+    setSettings(sett);
+
+    const auds = safeGetLocalStorage<InventoryAudit[]>(`${prefix}audits`, trialInfo ? [] : DEFAULT_AUDITS);
+    setAudits(auds);
+
+    const pos = safeGetLocalStorage<PurchaseOrder[]>(`${prefix}purchase_orders`, trialInfo ? [] : DEFAULT_PURCHASE_ORDERS);
+    setPurchaseOrders(pos);
+
+    const cbs = safeGetLocalStorage<CashbookEntry[]>(`${prefix}cashbook`, trialInfo ? [] : DEFAULT_CASHBOOK);
+    setCashbook(cbs);
+
+    const projs = safeGetLocalStorage<Project[]>(`${prefix}projects`, trialInfo ? [] : DEFAULT_PROJECTS);
+    setProjects(projs);
+
+    const shifts = safeGetLocalStorage<CashShift[]>(`${prefix}cash_shifts`, []);
+    setCashShifts(shifts);
+
+    const logs = safeGetLocalStorage<SystemAuditLog[]>(`${prefix}system_logs`, trialInfo ? [] : DEFAULT_SYSTEM_LOGS);
+    setSystemLogs(logs);
+
+    // Update HTML tab title dynamically
+    if (sett) {
+      document.title = sett.shopName;
+    }
+
+    // Load Theme preference
+    const localTheme = localStorage.getItem("kiot_theme");
+    if (localTheme) setTheme(localTheme as "dark" | "light");
+
+    // Load or initialize Simulated Server Database for demonstration/sync backup
+    const serverInvs = localStorage.getItem("kiot_server_invoices");
+    if (!serverInvs) {
+      localStorage.setItem("kiot_server_invoices", JSON.stringify(DEFAULT_INVOICES));
+    }
+  }, [trialInfo]);
+
+  // 3a. SaaS Trial Polling Loader (from PostgreSQL)
+  useEffect(() => {
+    if (currentStaff?.email?.toLowerCase() === "congbaotruong8@gmail.com") {
+      const fetchTrialsList = async () => {
+        try {
+          const res = await fetch("/api/trials");
+          if (res.ok) {
+            const list = await res.json();
+            list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            setTrialRegistrations(list);
+          }
+        } catch (error) {
+          console.warn("Lỗi tải thông tin dùng thử từ PostgreSQL:", error);
+        }
+      };
+      fetchTrialsList();
+      const interval = setInterval(fetchTrialsList, 10000); // Poll every 10s
+      return () => clearInterval(interval);
+    } else {
+      setTrialRegistrations([]);
+    }
+  }, [currentStaff]);
+
+  // 3b. Sync existing, new & deleted Firestore "kiot_trials" directly to PostgreSQL (runs unconditionally on startup)
+  useEffect(() => {
+    const trialsCol = collection(db, "kiot_trials");
+    const unsubscribe = onSnapshot(trialsCol, async (snapshot) => {
+      // Load persistently deleted trial IDs from local storage to skip cache-based updates
+      let persistedDeletedIds: string[] = [];
+      try {
+        const storedStr = localStorage.getItem("kiot_deleted_trial_ids");
+        if (storedStr) {
+          persistedDeletedIds = JSON.parse(storedStr);
+        }
+      } catch (e) {
+        console.warn("Lỗi đọc kiot_deleted_trial_ids từ localStorage:", e);
+      }
+
+      for (const change of snapshot.docChanges()) {
+        const trial = change.doc.data() as TrialRegistration;
+        const id = change.doc.id;
+
+        const isDeleted = deletedTrialIdsRef.current.has(id) || persistedDeletedIds.includes(id);
+
+        if (change.type === "removed") {
+          deletedTrialIdsRef.current.add(id);
+          // Add to local storage too if not already there
+          if (!persistedDeletedIds.includes(id)) {
+            persistedDeletedIds.push(id);
+            localStorage.setItem("kiot_deleted_trial_ids", JSON.stringify(persistedDeletedIds));
+          }
+          // Document was deleted from Firestore, delete from PostgreSQL too
+          try {
+            await fetch(`/api/trials/${id}`, { method: "DELETE" });
+          } catch (err) {
+            console.error("Lỗi đồng bộ xóa dùng thử sang PostgreSQL:", err);
+          }
+        } else {
+          // If the ID is in deleted list, skip to prevent re-creation from cache or snapshot latency
+          if (isDeleted) {
+            console.log(`Bỏ qua đồng bộ ngược vì trial ${id} đã bị xóa vĩnh viễn (kiểm tra Local Storage / Ref).`);
+            continue;
+          }
+          // Document was added or modified, upsert to PostgreSQL
+          try {
+            await fetch("/api/trials", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(trial),
+            });
+          } catch (err) {
+            console.error("Lỗi đồng bộ dùng thử sang PostgreSQL:", err);
           }
         }
       }
-    };
-    window.addEventListener("scroll", handleScroll);
-    return () => window.removeEventListener("scroll", handleScroll);
-  }, []);
 
-  const handleNavigate = (sectionId: string) => {
-    const el = document.getElementById(sectionId);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth" });
-      setActiveSection(sectionId);
+      // Force refresh of trial registrations if user is logged in as admin to keep UI perfectly in sync
+      if (currentStaff?.email?.toLowerCase() === "congbaotruong8@gmail.com") {
+        try {
+          const trialsRes = await fetch("/api/trials");
+          if (trialsRes.ok) {
+            const list = await trialsRes.json();
+            // Filter out any locally deleted trials to ensure absolute UI consistency
+            const filteredList = list.filter((t: any) => !deletedTrialIdsRef.current.has(t.id) && !persistedDeletedIds.includes(t.id));
+            filteredList.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            setTrialRegistrations(filteredList);
+          }
+        } catch (reloadErr) {
+          console.warn("Lỗi tải lại danh sách dùng thử sau khi đồng bộ:", reloadErr);
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [currentStaff]);
+
+  useEffect(() => {
+    const localTrial = localStorage.getItem("kiot_trial_info");
+    if (localTrial) {
+      try {
+        const parsed = JSON.parse(localTrial) as TrialRegistration;
+        setTrialInfo(parsed);
+        const diffTime = new Date(parsed.expireDate).getTime() - Date.now();
+        setTrialDaysLeft(Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+
+        // Setup polling sync for their own store!
+        const fetchOwnTrial = async () => {
+          try {
+            const res = await fetch("/api/trials");
+            if (res.ok) {
+              const list = await res.json();
+              const freshData = list.find((t: any) => t.id === parsed.id) as TrialRegistration | undefined;
+              if (freshData) {
+                localStorage.setItem("kiot_trial_info", JSON.stringify(freshData));
+                setTrialInfo(freshData);
+                const freshDiff = new Date(freshData.expireDate).getTime() - Date.now();
+                setTrialDaysLeft(Math.ceil(freshDiff / (1000 * 60 * 60 * 24)));
+
+                // Also update the general settings name if changed
+                const settingsStr = localStorage.getItem("kiot_settings");
+                if (settingsStr) {
+                  try {
+                    const currentSettings = JSON.parse(settingsStr);
+                    if (currentSettings.shopName !== freshData.shopName) {
+                      currentSettings.shopName = freshData.shopName;
+                      localStorage.setItem("kiot_settings", JSON.stringify(currentSettings));
+                      setSettings(currentSettings);
+                    }
+                  } catch (e) {}
+                }
+              }
+            }
+          } catch (err) {
+            console.warn("Lỗi đồng bộ thông tin dùng thử từ PostgreSQL:", err);
+          }
+        };
+
+        fetchOwnTrial();
+        const interval = setInterval(fetchOwnTrial, 15000); // Poll every 15s
+        return () => clearInterval(interval);
+      } catch (e) {
+        console.warn("Lỗi đọc thông tin dùng thử cục bộ:", e);
+      }
+    } else {
+      setTrialInfo(null);
+      setTrialDaysLeft(null);
+    }
+  }, [currentStaff]);
+
+  const handleUpdateTrialStatus = async (id: string, status: "TRIAL_ACTIVE" | "EXPIRED" | "CONVERTED") => {
+    try {
+      const targetTrial = trialRegistrations.find(t => t.id === id);
+      if (targetTrial) {
+        const updated = { ...targetTrial, status };
+
+        // 1. Update on Firebase Firestore first
+        await safeSetDoc(doc(db, "kiot_trials", id), updated);
+
+        // 2. Update on PostgreSQL
+        const res = await fetch("/api/trials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated)
+        });
+        if (!res.ok) throw new Error("Cập nhật trên server thất bại");
+
+        // Force reload from backend
+        const trialsRes = await fetch("/api/trials");
+        if (trialsRes.ok) {
+          const list = await trialsRes.json();
+          list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          setTrialRegistrations(list);
+        }
+        
+        // Also update local storage if the updated trial matches currently logged in trial store!
+        const localTrialStr = localStorage.getItem("kiot_trial_info");
+        if (localTrialStr) {
+          try {
+            const localTrial = JSON.parse(localTrialStr) as TrialRegistration;
+            if (localTrial.id === id) {
+              localStorage.setItem("kiot_trial_info", JSON.stringify(updated));
+              setTrialInfo(updated);
+            }
+          } catch (e) {}
+        }
+
+        safeDispatchEvent("kiot-toast", {
+          type: "success",
+          title: "Đã cập nhật trạng thái",
+          message: `Cửa hàng "${targetTrial.shopName}" đã chuyển trạng thái thành công.`
+        });
+      }
+    } catch (err) {
+      console.error("Lỗi cập nhật dùng thử:", err);
+      alert("Không thể cập nhật trạng thái dùng thử.");
     }
   };
 
-  const handleOpenChatWithPrompt = (prompt: string) => {
-    setChatPrompt(prompt);
-    setIsChatOpen(true);
+  const handleExtendTrial = async (id: string, days: number) => {
+    try {
+      let targetTrial = trialRegistrations.find(t => t.id === id);
+      if (!targetTrial && trialInfo && trialInfo.id === id) {
+        targetTrial = trialInfo;
+      }
+      if (targetTrial) {
+        const currentExp = new Date(targetTrial.expireDate);
+        const newExp = new Date(currentExp.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+        const updated = { 
+          ...targetTrial, 
+          expireDate: newExp,
+          status: "TRIAL_ACTIVE" as const
+        };
+
+        // 1. Update on Firebase Firestore first
+        await safeSetDoc(doc(db, "kiot_trials", id), updated);
+
+        // 2. Update on PostgreSQL
+        const res = await fetch("/api/trials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated)
+        });
+        if (!res.ok) throw new Error("Gia hạn trên server thất bại");
+
+        // Force reload from backend
+        const trialsRes = await fetch("/api/trials");
+        if (trialsRes.ok) {
+          const list = await trialsRes.json();
+          list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          setTrialRegistrations(list);
+        }
+
+        // Also update local storage if it's the current trial store
+        const localTrialStr = localStorage.getItem("kiot_trial_info");
+        if (localTrialStr) {
+          try {
+            const localTrial = JSON.parse(localTrialStr) as TrialRegistration;
+            if (localTrial.id === id) {
+              localStorage.setItem("kiot_trial_info", JSON.stringify(updated));
+              setTrialInfo(updated);
+              const diffTime = new Date(newExp).getTime() - Date.now();
+              setTrialDaysLeft(Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+            }
+          } catch (e) {}
+        }
+
+        safeDispatchEvent("kiot-toast", {
+          type: "success",
+          title: "Đã gia hạn thành công",
+          message: `Cửa hàng "${targetTrial.shopName}" đã được cộng thêm ${days} ngày dùng thử.`
+        });
+      }
+    } catch (err) {
+      console.error("Lỗi gia hạn dùng thử:", err);
+      alert("Không thể gia hạn dùng thử.");
+    }
   };
 
-  const handleClearExternalPrompt = () => {
-    setChatPrompt("");
+  const handleSetTrialExpirationDate = async (id: string, dateStr: string) => {
+    try {
+      let targetTrial = trialRegistrations.find(t => t.id === id);
+      if (!targetTrial && trialInfo && trialInfo.id === id) {
+        targetTrial = trialInfo;
+      }
+      if (targetTrial) {
+        const newExp = new Date(dateStr).toISOString();
+        const updated = { 
+          ...targetTrial, 
+          expireDate: newExp,
+          status: targetTrial.status === "CONVERTED" ? ("CONVERTED" as const) : ("TRIAL_ACTIVE" as const)
+        };
+
+        // 1. Update on Firebase Firestore first
+        await safeSetDoc(doc(db, "kiot_trials", id), updated);
+
+        // 2. Update on PostgreSQL
+        const res = await fetch("/api/trials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated)
+        });
+        if (!res.ok) throw new Error("Cập nhật ngày hết hạn trên server thất bại");
+
+        // Force reload from backend
+        const trialsRes = await fetch("/api/trials");
+        if (trialsRes.ok) {
+          const list = await trialsRes.json();
+          list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          setTrialRegistrations(list);
+        }
+
+        // Also update local storage if it's the current trial store
+        const localTrialStr = localStorage.getItem("kiot_trial_info");
+        if (localTrialStr) {
+          try {
+            const localTrial = JSON.parse(localTrialStr) as TrialRegistration;
+            if (localTrial.id === id) {
+              localStorage.setItem("kiot_trial_info", JSON.stringify(updated));
+              setTrialInfo(updated);
+              const diffTime = new Date(newExp).getTime() - Date.now();
+              setTrialDaysLeft(Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+            }
+          } catch (e) {}
+        }
+
+        safeDispatchEvent("kiot-toast", {
+          type: "success",
+          title: "Đã cập nhật ngày hết hạn",
+          message: `Cửa hàng "${targetTrial.shopName}" đã được chuyển ngày hết hạn thành ${new Date(dateStr).toLocaleDateString("vi-VN")}.`
+        });
+      }
+    } catch (err) {
+      console.error("Lỗi cập nhật ngày dùng thử:", err);
+      alert("Không thể cập nhật ngày dùng thử.");
+    }
   };
 
-  // Contact form state
-  const [contactName, setContactName] = useState("");
-  const [contactPhone, setContactPhone] = useState("");
-  const [contactProperty, setContactProperty] = useState("chung-cu");
-  const [contactMsg, setContactMsg] = useState("");
-  const [isFormSubmitted, setIsFormSubmitted] = useState(false);
+  const handleUpdateTrialPassword = async (id: string, newPassword: string) => {
+    try {
+      let targetTrial = trialRegistrations.find(t => t.id === id);
+      if (!targetTrial && trialInfo && trialInfo.id === id) {
+        targetTrial = trialInfo;
+      }
+      if (targetTrial) {
+        const updated = { 
+          ...targetTrial, 
+          password: newPassword
+        };
 
-  const handleFormSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!contactName || !contactPhone) return;
-    setIsFormSubmitted(true);
+        // 1. Update on Firebase Firestore first
+        await safeSetDoc(doc(db, "kiot_trials", id), updated);
+
+        // 2. Update on PostgreSQL
+        const res = await fetch("/api/trials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated)
+        });
+        if (!res.ok) throw new Error("Cập nhật mật khẩu trên server thất bại");
+
+        // Force reload from backend
+        const trialsRes = await fetch("/api/trials");
+        if (trialsRes.ok) {
+          const list = await trialsRes.json();
+          list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          setTrialRegistrations(list);
+        }
+
+        // Also update local storage if it's the current trial store
+        const localTrialStr = localStorage.getItem("kiot_trial_info");
+        if (localTrialStr) {
+          try {
+            const localTrial = JSON.parse(localTrialStr) as TrialRegistration;
+            if (localTrial.id === id) {
+              localStorage.setItem("kiot_trial_info", JSON.stringify(updated));
+              setTrialInfo(updated);
+            }
+          } catch (e) {}
+        }
+
+        safeDispatchEvent("kiot-toast", {
+          type: "success",
+          title: "Đã đổi mật khẩu",
+          message: `Thay đổi mật khẩu cho cửa hàng "${targetTrial.shopName}" thành công.`
+        });
+      }
+    } catch (err: any) {
+      console.error("Lỗi cập nhật mật khẩu:", err);
+      alert(`Không thể đổi mật khẩu dùng thử: ${err.message || err}`);
+    }
   };
 
-  const resetForm = () => {
-    setContactName("");
-    setContactPhone("");
-    setContactProperty("chung-cu");
-    setContactMsg("");
-    setIsFormSubmitted(false);
+  const handleDeleteTrial = async (id: string) => {
+    try {
+      const isOwner = currentStaff?.email?.toLowerCase() === "congbaotruong8@gmail.com";
+      console.log(`[handleDeleteTrial] Đang xử lý yêu cầu xóa thử nghiệm ID: ${id}. Quyền Owner: ${isOwner}`);
+      
+      if (!isOwner) {
+        console.error(`[handleDeleteTrial] Quyền bị từ chối: Email ${currentStaff?.email || "Chưa đăng nhập"} không có quyền xóa đăng ký dùng thử.`);
+        safeDispatchEvent("kiot-toast", {
+          type: "error",
+          title: "Từ chối truy cập",
+          message: "Chỉ chủ sở hữu (Super Admin) mới có quyền xóa đăng ký dùng thử."
+        });
+        return;
+      }
+
+      const targetTrial = trialRegistrations.find(t => t.id === id);
+      const name = targetTrial?.shopName || id;
+
+      // 1. Optimistic UI Update: immediately mark as deleted and filter state to hide row instantly
+      deletedTrialIdsRef.current.add(id);
+      
+      // Persist the deletion status to local storage immediately to prevent onSnapshot/cache race condition
+      let persistedDeletedIds: string[] = [];
+      try {
+        const storedStr = localStorage.getItem("kiot_deleted_trial_ids") || "[]";
+        persistedDeletedIds = JSON.parse(storedStr);
+        if (!persistedDeletedIds.includes(id)) {
+          persistedDeletedIds.push(id);
+          localStorage.setItem("kiot_deleted_trial_ids", JSON.stringify(persistedDeletedIds));
+        }
+      } catch (e) {
+        localStorage.setItem("kiot_deleted_trial_ids", JSON.stringify([id]));
+        persistedDeletedIds = [id];
+      }
+
+      setTrialRegistrations(prev => prev.filter(t => t.id !== id));
+
+      safeDispatchEvent("kiot-toast", {
+        type: "info",
+        title: "Đang xóa dữ liệu...",
+        message: `Đang thực hiện xóa cưỡng bức cửa hàng "${name}" trên toàn hệ thống.`
+      });
+
+      // 2. Perform secondary/optional client-side Firestore delete (runs in background, errors tolerated)
+      try {
+        console.log(`[handleDeleteTrial] Gửi yêu cầu xóa Firestore client-side ID: ${id}...`);
+        await safeDeleteDoc(doc(db, "kiot_trials", id));
+      } catch (firestoreErr: any) {
+        console.warn("[handleDeleteTrial] Gặp lỗi khi xóa trên client Firestore (sẽ được dọn dẹp triệt để bởi Server backend):", firestoreErr.message || firestoreErr);
+      }
+
+      // 3. Trigger Server-side Force Cascade Delete (PostgreSQL + Server-side Firestore REST bypass)
+      try {
+        console.log(`[handleDeleteTrial] Gửi yêu cầu force-delete tới Server cho ID: ${id}...`);
+        const res = await fetch(`/api/trials/force-delete/${id}?adminEmail=congbaotruong8@gmail.com`, {
+          method: "DELETE"
+        });
+        
+        console.log(`[handleDeleteTrial] Kết quả force-delete Server status:`, res.status, res.statusText);
+        
+        if (res.ok) {
+          const result = await res.json();
+          console.log(`[handleDeleteTrial] Đã xóa cưỡng bức thành công cửa hàng [${name}]:`, result);
+          safeDispatchEvent("kiot-toast", {
+            type: "success",
+            title: "Xóa thành công",
+            message: `Cửa hàng "${name}" và toàn bộ dữ liệu đã được dọn dẹp triệt để.`
+          });
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          console.error("[handleDeleteTrial] Lỗi chi tiết từ API Force-Delete:", errData);
+          safeDispatchEvent("kiot-toast", {
+            type: "error",
+            title: "Lỗi dọn dẹp",
+            message: `Lỗi máy chủ khi dọn dẹp: ${errData.error || "Không xác định"}`
+          });
+        }
+      } catch (serverErr: any) {
+        console.error("[handleDeleteTrial] Lỗi kết nối khi gửi yêu cầu force-delete:", serverErr);
+        safeDispatchEvent("kiot-toast", {
+          type: "error",
+          title: "Lỗi kết nối",
+          message: "Không thể kết nối tới máy chủ để thực hiện dọn dẹp triệt để."
+        });
+      }
+
+      // 4. Force reload from backend to ensure state parity
+      try {
+        const trialsRes = await fetch("/api/trials");
+        if (trialsRes.ok) {
+          const list = await trialsRes.json();
+          const filteredList = list.filter((t: any) => t.id !== id && !persistedDeletedIds.includes(t.id)); // Double check local deleted set
+          filteredList.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          setTrialRegistrations(filteredList);
+        }
+      } catch (reloadErr) {
+        console.warn("Lỗi tải lại danh sách dùng thử sau khi xóa:", reloadErr);
+      }
+
+      // 5. Clear local storage if they deleted the active trial
+      const localTrialStr = localStorage.getItem("kiot_trial_info");
+      if (localTrialStr) {
+        try {
+          const localTrial = JSON.parse(localTrialStr) as TrialRegistration;
+          if (localTrial.id === id) {
+            localStorage.removeItem("kiot_trial_info");
+            setTrialInfo(null);
+            setTrialDaysLeft(null);
+          }
+        } catch (e) {}
+      }
+
+    } catch (err: any) {
+      console.error("[handleDeleteTrial] Gặp lỗi không mong muốn:", err);
+    }
   };
+
+  // 4. Live Clock Ticker
+  useEffect(() => {
+    const ticker = setInterval(() => {
+      const now = new Date();
+      setLiveTime(now.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+    }, 1000);
+    return () => clearInterval(ticker);
+  }, []);
+
+  // 4a. Global Keyboard Shortcuts Listener for Cashier/POS Quick Actions
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const posKeys = ["F1", "F2", "F4", "F8", "F9"];
+      if (!posKeys.includes(e.key)) return;
+
+      // Check if user is allowed to access POS
+      if (currentStaff && !isTabAllowed("pos", currentStaff)) {
+        return;
+      }
+
+      // If they are on another tab, automatically redirect them to the POS tab first!
+      if (activeTab !== "pos") {
+        e.preventDefault();
+        setActiveTab("pos");
+
+        // Stagger slightly to allow the POS component to fully mount
+        setTimeout(() => {
+          triggerAction(e.key);
+        }, 180);
+      }
+    };
+
+    const triggerAction = (key: string) => {
+      if (key === "F1") {
+        const searchInput = document.getElementById("pos-product-search");
+        if (searchInput) {
+          (searchInput as HTMLInputElement).focus();
+          (searchInput as HTMLInputElement).select();
+        }
+      } else if (key === "F9") {
+        const checkoutBtn = document.getElementById("pos-checkout-btn");
+        if (checkoutBtn) {
+          (checkoutBtn as HTMLButtonElement).click();
+        }
+      } else if (key === "F8") {
+        const customerSelect = document.getElementById("pos-customer-select");
+        if (customerSelect) {
+          (customerSelect as HTMLSelectElement).focus();
+        }
+      } else if (key === "F2") {
+        window.dispatchEvent(new CustomEvent("kiot-trigger-new-customer"));
+      } else if (key === "F4") {
+        window.dispatchEvent(new CustomEvent("kiot-clear-cart"));
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+    };
+  }, [activeTab, currentStaff]);
+
+  // 4b. Firebase Auth and Role-Based Login Handlers
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // Find if this Google email matches any existing staff member in KiotX local database
+        const matched = staff.find(s => s.email.toLowerCase() === user.email?.toLowerCase());
+        if (matched) {
+          setCurrentStaff(matched);
+          localStorage.setItem("kiot_current_staff", JSON.stringify(matched));
+        } else {
+          // Dynamically provision them an OWNER role so they can test their own Google Account with full features
+          const newStaff: Staff = {
+            id: `staff-${user.uid}`,
+            name: user.displayName || user.email?.split("@")[0] || "Chủ cửa hàng (Google)",
+            email: user.email || "",
+            role: "OWNER",
+            phone: "",
+            active: true
+          };
+          setStaff(prev => {
+            if (!prev.some(s => s.email.toLowerCase() === newStaff.email.toLowerCase())) {
+              const updated = [...prev, newStaff];
+              localStorage.setItem("kiot_staff", JSON.stringify(updated));
+              return updated;
+            }
+            return prev;
+          });
+          setCurrentStaff(newStaff);
+          localStorage.setItem("kiot_current_staff", JSON.stringify(newStaff));
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [staff]);
+
+  const handleGoogleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleAuthProvider);
+      safeDispatchEvent("kiot-toast", {
+        type: "success",
+        title: "Đăng nhập Google thành công! 🎉",
+        message: "Tài khoản Google đã kết nối và đồng bộ vai trò thành viên."
+      });
+    } catch (err: any) {
+      console.error("Lỗi Google Sign-In:", err);
+      if (err?.code !== "auth/popup-closed-by-user") {
+        alert("Không thể kết nối hoặc xác thực với Google Auth. Chi tiết: " + err.message);
+      }
+    }
+  };
+
+  const handleSelectSimulatedStaff = (selected: Staff) => {
+    setCurrentStaff(selected);
+    localStorage.setItem("kiot_current_staff", JSON.stringify(selected));
+    
+    // Automatically redirect CASHIER to POS screen, and OWNER/MANAGER to Dashboard
+    if (selected.role === "CASHIER") {
+      setActiveTab("pos");
+    } else {
+      setActiveTab("dashboard");
+    }
+
+    safeDispatchEvent("kiot-toast", {
+      type: "success",
+      title: "Đăng nhập thành công! 🔓",
+      message: `Chào mừng ${selected.role === "OWNER" ? "Chủ tiệm" : selected.role === "MANAGER" ? "Quản lý" : "Thu ngân"}: ${selected.name}`
+    });
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth).catch(() => {});
+    setCurrentStaff(null);
+    setTrialInfo(null);
+    setTrialDaysLeft(null);
+    localStorage.removeItem("kiot_current_staff");
+    localStorage.removeItem("kiot_trial_info");
+    safeDispatchEvent("kiot-toast", {
+      type: "info",
+      title: "Đã đăng xuất 🔒",
+      message: "Bạn đã đăng xuất khỏi phiên làm việc an toàn."
+    });
+  };
+
+  // Synchronization engine for Offline -> Online data replication
+  const triggerSync = async (targetQueue?: Invoice[]) => {
+    const queueToSync = targetQueue || offlineQueue;
+    if (queueToSync.length === 0) return;
+
+    setIsSyncing(true);
+    
+    // Dispatch a beautiful synchronizing toast
+    safeDispatchEvent("kiot-toast", {
+      type: "invoice",
+      title: "Đang tự động đồng bộ...",
+      message: `Đang kết nối đám mây để tải lên ${queueToSync.length} hóa đơn bán hàng ngoại tuyến.`
+    });
+
+    // Simulate network delay to make it highly realistic and satisfying to watch
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    try {
+      const serverInvs = localStorage.getItem("kiot_server_invoices");
+      const currentServerList: Invoice[] = serverInvs ? JSON.parse(serverInvs) : [];
+      
+      // Merge unique invoices by code/id
+      const merged = [...queueToSync, ...currentServerList];
+      // Keep only unique ones by invoiceCode
+      const uniqueMergedMap = new Map<string, Invoice>();
+      merged.forEach(inv => {
+        if (inv.invoiceCode) {
+          uniqueMergedMap.set(inv.invoiceCode, inv);
+        } else {
+          uniqueMergedMap.set(inv.id, inv);
+        }
+      });
+      const uniqueMerged = Array.from(uniqueMergedMap.values());
+
+      localStorage.setItem("kiot_server_invoices", JSON.stringify(uniqueMerged));
+      
+      // Upload offline-queued invoices directly to Firestore
+      for (const inv of queueToSync) {
+        await safeSetDoc(doc(db, "kiot_invoices", inv.id), inv);
+      }
+      
+      // Clear offline queue
+      localStorage.setItem("kiot_offline_queue", JSON.stringify([]));
+      setOfflineQueue([]);
+
+      safeDispatchEvent("kiot-toast", {
+        type: "success",
+        title: "Đồng bộ thành công! 🎉",
+        message: `Đã đẩy thành công ${queueToSync.length} hóa đơn từ thiết bị cục bộ lên cơ sở dữ liệu đám mây.`
+      });
+    } catch (err: any) {
+      console.error("Lỗi đồng bộ đám mây:", err);
+      safeDispatchEvent("kiot-toast", {
+        type: "stock-warning",
+        title: "Lỗi đồng bộ dữ liệu",
+        message: `Gặp sự cố kết nối với máy chủ đám mây: ${err?.message || err || "Không rõ nguyên nhân"}.`
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Monitor online/offline states from the browser environment
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      safeDispatchEvent("kiot-toast", {
+        type: "success",
+        title: "Đã khôi phục kết nối",
+        message: "Đã phát hiện thấy tín hiệu mạng internet! Hệ thống tự động chuyển sang chế độ trực tuyến."
+      });
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      safeDispatchEvent("kiot-toast", {
+        type: "stock-warning",
+        title: "Mất kết nối mạng",
+        message: "Mất tín hiệu internet. Hệ thống đã tự động chuyển sang chế độ hoạt động ngoại tuyến (Offline)."
+      });
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // Trigger sync automatically when going online
+  useEffect(() => {
+    localStorage.setItem("kiot_is_online", String(isOnline));
+    if (isOnline && offlineQueue.length > 0 && !isSyncing) {
+      triggerSync();
+    }
+  }, [isOnline, offlineQueue, isSyncing]);
+
+  // 4c. Custom Event Listeners for System Audit Logging and Sidebar control
+  useEffect(() => {
+    const handleAddAuditLog = (e: CustomEvent<Omit<SystemAuditLog, "id" | "timestamp">>) => {
+      const newLog: SystemAuditLog = {
+        id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        actionType: e.detail.actionType,
+        actionName: e.detail.actionName,
+        description: e.detail.description,
+        actorName: e.detail.actorName,
+        actorRole: e.detail.actorRole,
+        timestamp: new Date().toISOString()
+      };
+      setSystemLogs(prev => {
+        const updated = [newLog, ...prev];
+        localStorage.setItem("kiot_system_logs", JSON.stringify(updated));
+        
+        // Direct save to online server/firestore if enabled
+        if (isOnline && autoSyncEnabled) {
+          safeSetDoc(doc(db, "kiot_system_logs", newLog.id), newLog).catch(err => {
+            console.error("Lỗi đồng bộ nhật ký lên Firestore:", err);
+          });
+        }
+        
+        return updated;
+      });
+    };
+
+    const handleSetSidebar = (e: CustomEvent<{ open: boolean }>) => {
+      setIsSidebarOpen(e.detail.open);
+      localStorage.setItem("kiot_is_sidebar_open", String(e.detail.open));
+    };
+
+    window.addEventListener("kiot-add-audit-log" as any, handleAddAuditLog as any);
+    window.addEventListener("kiot-set-sidebar" as any, handleSetSidebar as any);
+
+    return () => {
+      window.removeEventListener("kiot-add-audit-log" as any, handleAddAuditLog as any);
+      window.removeEventListener("kiot-set-sidebar" as any, handleSetSidebar as any);
+    };
+  }, [isOnline, autoSyncEnabled]);
+
+  // 5. State Persistence Helpers (Save to state + LocalStorage)
+  const getDynamicKey = (baseKey: string) => {
+    return trialInfo ? `kiot_trial_${trialInfo.id}_${baseKey}` : `kiot_${baseKey}`;
+  };
+
+  const saveProducts = (updated: Product[]) => {
+    // Only check for stock alerts if products was already loaded (not empty initial load)
+    if (products.length > 0) {
+      updated.forEach(newP => {
+        const oldP = products.find(p => p.id === newP.id);
+        if (oldP) {
+          // Check if stock decreased and crossed the minStock threshold
+          if (newP.stock <= newP.minStock && oldP.stock > newP.minStock) {
+            safeDispatchEvent("kiot-toast", {
+              type: "stock-warning",
+              title: "Cảnh báo tồn kho tối thiểu",
+              message: `Sản phẩm "${newP.name}" (${newP.unit}) đã chạm ngưỡng tối thiểu! Tồn kho hiện tại: ${newP.stock} (Yêu cầu tối thiểu: ${newP.minStock})`
+            });
+          }
+        }
+      });
+    }
+    setProducts(updated);
+    localStorage.setItem(getDynamicKey("products"), JSON.stringify(updated));
+  };
+
+  const saveCategories = (updated: Category[]) => {
+    setCategories(updated);
+    localStorage.setItem(getDynamicKey("categories"), JSON.stringify(updated));
+  };
+
+  const saveCustomers = (updated: Customer[]) => {
+    setCustomers(updated);
+    localStorage.setItem(getDynamicKey("customers"), JSON.stringify(updated));
+  };
+
+  const saveSuppliers = (updated: Supplier[]) => {
+    setSuppliers(updated);
+    localStorage.setItem(getDynamicKey("suppliers"), JSON.stringify(updated));
+  };
+
+  const saveInvoices = (updated: Invoice[]) => {
+    setInvoices(updated);
+    localStorage.setItem(getDynamicKey("invoices"), JSON.stringify(updated));
+  };
+
+  const saveStaff = (updated: Staff[]) => {
+    setStaff(updated);
+    localStorage.setItem(getDynamicKey("staff"), JSON.stringify(updated));
+    if (isOnline && autoSyncEnabled) {
+      triggerSyncAll();
+    }
+  };
+
+  const saveSettings = (updated: ShopSetting) => {
+    setSettings(updated);
+    localStorage.setItem(getDynamicKey("settings"), JSON.stringify(updated));
+    
+    // Update HTML tab title dynamically
+    document.title = updated.shopName;
+  };
+
+  const saveAudits = (updated: InventoryAudit[]) => {
+    setAudits(updated);
+    localStorage.setItem(getDynamicKey("audits"), JSON.stringify(updated));
+  };
+
+  const savePurchaseOrders = (updated: PurchaseOrder[]) => {
+    setPurchaseOrders(updated);
+    localStorage.setItem(getDynamicKey("purchase_orders"), JSON.stringify(updated));
+  };
+
+  const saveCashbook = (updated: CashbookEntry[]) => {
+    setCashbook(updated);
+    localStorage.setItem(getDynamicKey("cashbook"), JSON.stringify(updated));
+  };
+
+  const saveProjects = (updated: Project[]) => {
+    setProjects(updated);
+    localStorage.setItem(getDynamicKey("projects"), JSON.stringify(updated));
+  };
+
+  const saveCashShifts = (updated: CashShift[]) => {
+    setCashShifts(updated);
+    localStorage.setItem(getDynamicKey("cash_shifts"), JSON.stringify(updated));
+  };
+
+  const saveSystemLogs = (updated: SystemAuditLog[]) => {
+    setSystemLogs(updated);
+    localStorage.setItem(getDynamicKey("system_logs"), JSON.stringify(updated));
+  };
+
+  // PostgreSQL Full Cloud Backup & Synchronize Engine
+  const triggerSyncAll = async () => {
+    if (!isOnline) {
+      safeDispatchEvent("kiot-toast", {
+        type: "stock-warning",
+        title: "Đồng bộ thất bại",
+        message: "Không thể tiến hành đồng bộ khi đang ngoại tuyến (Offline)."
+      });
+      return;
+    }
+
+    const tenantId = trialInfo?.id || "demo";
+    setIsSyncingAll(true);
+    try {
+      const response = await fetch(`/api/kiot/sync/${tenantId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          products,
+          categories,
+          customers,
+          suppliers,
+          invoices,
+          staff,
+          settings,
+          audits,
+          purchaseOrders,
+          cashbook,
+          projects,
+          systemLogs
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Không phản hồi từ PostgreSQL.");
+      }
+
+      const nowStr = new Date().toISOString();
+      setLastSyncTime(nowStr);
+      localStorage.setItem("kiot_last_sync_time", nowStr);
+
+      safeDispatchEvent("kiot-toast", {
+        type: "success",
+        title: "Đồng bộ PostgreSQL thành công! 🎉",
+        message: "Tất cả dữ liệu sản phẩm, hóa đơn, cấu hình của bạn đã được sao lưu an toàn lên cơ sở dữ liệu PostgreSQL (Cloud SQL)."
+      });
+    } catch (error: any) {
+      console.error("Lỗi đồng bộ PostgreSQL: ", error);
+      safeDispatchEvent("kiot-toast", {
+        type: "stock-warning",
+        title: "Lỗi đồng bộ đám mây",
+        message: `Không thể lưu dữ liệu vào cơ sở dữ liệu PostgreSQL: ${error?.message || "Lỗi kết nối máy chủ backend"}.`
+      });
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
+
+  const handleRestoreBackup = (data: any) => {
+    if (data.products) saveProducts(data.products);
+    if (data.categories) saveCategories(data.categories);
+    if (data.customers) saveCustomers(data.customers);
+    if (data.suppliers) saveSuppliers(data.suppliers);
+    if (data.invoices) saveInvoices(data.invoices);
+    if (data.staff) saveStaff(data.staff);
+    if (data.audits) saveAudits(data.audits);
+    if (data.settings) saveSettings(data.settings);
+    if (data.purchaseOrders) savePurchaseOrders(data.purchaseOrders);
+    if (data.cashbook) saveCashbook(data.cashbook);
+    if (data.projects) saveProjects(data.projects);
+    
+    // Auto sync to cloud if online after restore
+    if (isOnline && autoSyncEnabled) {
+      setTimeout(() => {
+        triggerSyncAll();
+      }, 1500);
+    }
+  };
+
+  const handleRestoreFromPostgres = async () => {
+    if (!isOnline) {
+      safeDispatchEvent("kiot-toast", {
+        type: "stock-warning",
+        title: "Khôi phục thất bại",
+        message: "Không thể phục hồi khi đang ngoại tuyến."
+      });
+      return;
+    }
+
+    const tenantId = trialInfo?.id || "demo";
+    try {
+      const res = await fetch(`/api/kiot/load/${tenantId}`);
+      if (!res.ok) {
+        throw new Error("Không thể tải dữ liệu từ PostgreSQL.");
+      }
+      const data = await res.json();
+      
+      // Load tables to state and localStorage
+      if (data.products) saveProducts(data.products);
+      if (data.categories) saveCategories(data.categories);
+      if (data.customers) saveCustomers(data.customers);
+      if (data.suppliers) saveSuppliers(data.suppliers);
+      if (data.invoices) saveInvoices(data.invoices);
+      if (data.audits) saveAudits(data.audits);
+      if (data.staff) {
+        saveStaff(data.staff);
+      }
+      if (data.settings) {
+        saveSettings(data.settings);
+      }
+      if (data.purchaseOrders) savePurchaseOrders(data.purchaseOrders);
+      if (data.cashbook) saveCashbook(data.cashbook);
+      if (data.projects) saveProjects(data.projects);
+      if (data.systemLogs) {
+        setSystemLogs(data.systemLogs);
+        localStorage.setItem(getDynamicKey("system_logs"), JSON.stringify(data.systemLogs));
+      }
+
+      safeDispatchEvent("kiot-toast", {
+        type: "success",
+        title: "Khôi phục thành công! 🎉",
+        message: "Toàn bộ dữ liệu của bạn đã được tải xuống và khôi phục hoàn toàn từ đám mây PostgreSQL."
+      });
+    } catch (error: any) {
+      console.error("Lỗi phục hồi từ PostgreSQL:", error);
+      alert("Có lỗi xảy ra khi phục hồi dữ liệu từ PostgreSQL: " + error.message);
+    }
+  };
+
+  // Periodic automatic sync helper (runs in background every 60 seconds if enabled and online)
+  useEffect(() => {
+    if (!autoSyncEnabled || !isOnline || products.length === 0) return;
+
+    const interval = setInterval(() => {
+      const runSilentSync = async () => {
+        try {
+          const tenantId = trialInfo?.id || "demo";
+          await fetch(`/api/kiot/sync/${tenantId}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              products,
+              categories,
+              customers,
+              suppliers,
+              invoices,
+              staff,
+              settings,
+              audits,
+              purchaseOrders,
+              cashbook,
+              projects,
+              systemLogs
+            })
+          });
+          const nowStr = new Date().toISOString();
+          setLastSyncTime(nowStr);
+          localStorage.setItem("kiot_last_sync_time", nowStr);
+          console.log("KiotX: Background PostgreSQL auto-sync successfully run.");
+        } catch (err) {
+          console.warn("KiotX: Background PostgreSQL auto-sync error:", err);
+        }
+      };
+      runSilentSync();
+    }, 60000);
+
+    return () => clearInterval(interval);
+  }, [autoSyncEnabled, isOnline, products, invoices, customers, settings, suppliers, purchaseOrders, cashbook, projects, trialInfo, staff]);
+
+  // 6. Database Mutation Handlers
+  const handleAddInvoice = (newInv: Invoice) => {
+    const updatedInvoices = [newInv, ...invoices];
+    saveInvoices(updatedInvoices);
+
+    const matchedCustomer = newInv.customerId ? customers.find(c => c.id === newInv.customerId) : null;
+    const customerEmail = matchedCustomer?.email;
+
+    // Network status handling for simulated cloud vs offline sync
+    if (isOnline) {
+      // Direct save to online server simulation
+      const serverInvs = localStorage.getItem("kiot_server_invoices");
+      const currentServerList: Invoice[] = serverInvs ? JSON.parse(serverInvs) : [];
+      localStorage.setItem("kiot_server_invoices", JSON.stringify([newInv, ...currentServerList]));
+
+      // Immediate Firestore backup if auto-sync is enabled
+      if (autoSyncEnabled) {
+        safeSetDoc(doc(db, "kiot_invoices", newInv.id), newInv).catch(err => {
+          console.error("Lỗi đồng bộ hóa đơn lên Firestore:", err);
+        });
+      }
+
+      // Dispatch success toast with server synced tag
+      safeDispatchEvent("kiot-toast", {
+        type: "invoice",
+        title: "Bán hàng trực tuyến thành công",
+        message: `Hóa đơn ${newInv.invoiceCode} đã được đồng bộ lên hệ thống máy chủ đám mây.`
+      });
+
+      // Send invoice email if customer email is available
+      if (customerEmail) {
+        fetch("/api/kiot/email-invoice", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            invoice: {
+              ...newInv,
+              trialId: trialInfo?.id || "default"
+            },
+            customerEmail,
+            shopSetting: settings,
+          }),
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.success) {
+              console.log("Email sent successfully:", data);
+              if (data.sentResult?.isDemo && data.sentResult?.previewUrl) {
+                safeDispatchEvent("kiot-toast", {
+                  type: "success",
+                  title: "Thư xác nhận (Demo)",
+                  message: `Hóa đơn #${newInv.invoiceCode} đã được gửi đến ${customerEmail}. Xem hộp thư tại: ${data.sentResult.previewUrl}`,
+                });
+              } else {
+                safeDispatchEvent("kiot-toast", {
+                  type: "success",
+                  title: "Đã gửi hóa đơn qua email",
+                  message: `Đã gửi email xác nhận hóa đơn đến hòm thư ${customerEmail} thành công.`,
+                });
+              }
+            } else {
+              console.error("Email sending returned error response:", data.error);
+            }
+          })
+          .catch((err) => {
+            console.error("Failed to send invoice email via API:", err);
+          });
+      }
+    } else {
+      // Queue for offline sync when internet returns
+      const updatedQueue = [newInv, ...offlineQueue];
+      setOfflineQueue(updatedQueue);
+      localStorage.setItem("kiot_offline_queue", JSON.stringify(updatedQueue));
+
+      // Dispatch alert toast indicating it is cached locally
+      safeDispatchEvent("kiot-toast", {
+        type: "stock-warning",
+        title: "Bán hàng ngoại tuyến (Offline) thành công",
+        message: `Hóa đơn ${newInv.invoiceCode} đã được lưu tạm tại thiết bị này. Hệ thống sẽ tự đồng bộ khi có mạng.`
+      });
+    }
+
+    // If customer is attached, accumulate totalSpent and points, update tier
+    if (newInv.customerId) {
+      const updatedCustomers = customers.map(c => {
+        if (c.id === newInv.customerId) {
+          const newSpent = c.totalSpent + newInv.totalPayable;
+          const newPoints = c.points + newInv.pointsEarned;
+          const currentDebt = c.debt || 0;
+          const newDebt = newInv.paymentMethod === "DEBT" ? currentDebt + newInv.totalPayable : currentDebt;
+          
+          // Determine tier based on total spent
+          let newTier = c.tier;
+          if (newSpent >= 50000000) newTier = "Diamond";
+          else if (newSpent >= 20000000) newTier = "Gold";
+          else if (newSpent >= 10000000) newTier = "Silver";
+          else if (newSpent >= 5000000) newTier = "Bronze";
+
+          return { ...c, totalSpent: newSpent, points: newPoints, tier: newTier, debt: newDebt };
+        }
+        return c;
+      });
+      saveCustomers(updatedCustomers);
+    }
+
+    // Automatically record sales income in cashbook if paid immediately
+    if (newInv.paymentMethod === "CASH" || newInv.paymentMethod === "BANK_TRANSFER" || newInv.paymentMethod === "CREDIT_CARD") {
+      const cashbookMethod = newInv.paymentMethod === "BANK_TRANSFER" ? "BANK_TRANSFER" : "CASH";
+      const newEntry: CashbookEntry = {
+        id: `cb-${Date.now()}`,
+        entryCode: `SQ${Math.floor(100000 + Math.random() * 900000)}`,
+        type: "INCOME",
+        amount: newInv.totalPayable,
+        category: "Doanh thu bán hàng",
+        description: `Thu tiền bán hàng - Hóa đơn ${newInv.invoiceCode}`,
+        paymentMethod: cashbookMethod as "CASH" | "BANK_TRANSFER",
+        date: newInv.date,
+        creatorName: newInv.cashierName || "Hệ thống"
+      };
+      saveCashbook([newEntry, ...cashbook]);
+    }
+  };
+
+  const handleUpdateInvoice = (updatedInv: Invoice) => {
+    const updatedInvoices = invoices.map(inv => inv.id === updatedInv.id ? updatedInv : inv);
+    saveInvoices(updatedInvoices);
+
+    // Save/backup to online server simulation
+    const serverInvs = localStorage.getItem("kiot_server_invoices");
+    if (serverInvs) {
+      const currentServerList: Invoice[] = JSON.parse(serverInvs);
+      const updatedServerList = currentServerList.map(inv => inv.id === updatedInv.id ? updatedInv : inv);
+      localStorage.setItem("kiot_server_invoices", JSON.stringify(updatedServerList));
+    }
+
+    // Cloud/Sync backup if online and auto-sync is enabled
+    if (isOnline && autoSyncEnabled) {
+      safeSetDoc(doc(db, "kiot_invoices", updatedInv.id), updatedInv).catch(err => {
+        console.error("Lỗi đồng bộ hóa đơn cập nhật lên Firestore:", err);
+      });
+    }
+
+    // Add system log
+    const newLog: SystemAuditLog = {
+      id: `log-${Date.now()}`,
+      actionType: "INVOICE_UPDATE",
+      actionName: "Cập nhật hóa đơn",
+      description: `Phát hành hóa đơn điện tử cho hóa đơn ${updatedInv.invoiceCode}.`,
+      actorName: currentStaff?.name || "Hệ thống",
+      actorRole: currentStaff?.role || "OWNER",
+      timestamp: new Date().toISOString()
+    };
+    saveSystemLogs([newLog, ...systemLogs]);
+  };
+
+  const handleCancelInvoice = (invoiceId: string, reason: string, cancelledBy: string) => {
+    // 1. Update the Invoice status, details
+    const targetInvoice = invoices.find(inv => inv.id === invoiceId);
+    if (!targetInvoice || targetInvoice.status === "CANCELLED") return;
+
+    const cancelledInv: Invoice = {
+      ...targetInvoice,
+      status: "CANCELLED",
+      cancelReason: reason,
+      cancelledBy: cancelledBy,
+      cancelDate: new Date().toISOString()
+    };
+
+    const updatedInvoices = invoices.map(inv => inv.id === invoiceId ? cancelledInv : inv);
+    saveInvoices(updatedInvoices);
+
+    // 2. Restore Inventory (Hoàn kho)
+    const updatedProducts = products.map(p => {
+      const orderItem = targetInvoice.items.find(item => item.productId === p.id);
+      if (orderItem) {
+        return {
+          ...p,
+          stock: p.stock + orderItem.quantity
+        };
+      }
+      return p;
+    });
+    saveProducts(updatedProducts);
+
+    // 3. Revert Customer values (Dòng khách hàng)
+    if (targetInvoice.customerId) {
+      const updatedCustomers = customers.map(c => {
+        if (c.id === targetInvoice.customerId) {
+          const newSpent = Math.max(0, c.totalSpent - targetInvoice.totalPayable);
+          const newPoints = Math.max(0, c.points - targetInvoice.pointsEarned);
+          const currentDebt = c.debt || 0;
+          const newDebt = targetInvoice.paymentMethod === "DEBT" ? Math.max(0, currentDebt - targetInvoice.totalPayable) : currentDebt;
+
+          // Re-evaluate tier
+          let newTier = c.tier;
+          if (newSpent >= 50000000) newTier = "Diamond";
+          else if (newSpent >= 20000000) newTier = "Gold";
+          else if (newSpent >= 10000000) newTier = "Silver";
+          else if (newSpent >= 5000000) newTier = "Bronze";
+          else newTier = "Standard";
+
+          return { ...c, totalSpent: newSpent, points: newPoints, tier: newTier, debt: newDebt };
+        }
+        return c;
+      });
+      saveCustomers(updatedCustomers);
+    }
+
+    // 4. Reverse Cashbook flow (Đảo dòng tiền)
+    let updatedCashbookList = [...cashbook];
+    if (targetInvoice.paymentMethod === "CASH" || targetInvoice.paymentMethod === "BANK_TRANSFER" || targetInvoice.paymentMethod === "CREDIT_CARD") {
+      const cashbookMethod = targetInvoice.paymentMethod === "BANK_TRANSFER" ? "BANK_TRANSFER" : "CASH";
+      const newEntry: CashbookEntry = {
+        id: `cb-${Date.now()}`,
+        entryCode: `SQ${Math.floor(100000 + Math.random() * 900000)}`,
+        type: "EXPENSE",
+        amount: targetInvoice.totalPayable,
+        category: "Chi hủy đơn hàng / Hoàn trả khách",
+        description: `Hoàn tiền do hủy hóa đơn ${targetInvoice.invoiceCode} - Lý do: ${reason}`,
+        paymentMethod: cashbookMethod as "CASH" | "BANK_TRANSFER",
+        date: new Date().toISOString().split("T")[0],
+        creatorName: cancelledBy
+      };
+      updatedCashbookList = [newEntry, ...cashbook];
+      saveCashbook(updatedCashbookList);
+    }
+
+    // 5. Cloud/Sync backups if online and auto-sync is enabled
+    if (isOnline && autoSyncEnabled) {
+      // Direct save to online server simulation
+      const serverInvs = localStorage.getItem("kiot_server_invoices");
+      if (serverInvs) {
+        const currentServerList: Invoice[] = JSON.parse(serverInvs);
+        const updatedServerList = currentServerList.map(inv => inv.id === invoiceId ? cancelledInv : inv);
+        localStorage.setItem("kiot_server_invoices", JSON.stringify(updatedServerList));
+      }
+
+      // Sync specific cancelled invoice
+      safeSetDoc(doc(db, "kiot_invoices", invoiceId), cancelledInv).catch(err => {
+        console.error("Lỗi đồng bộ hóa đơn hủy lên Firestore:", err);
+      });
+
+      // Sync restored products
+      targetInvoice.items.forEach(item => {
+        const prod = updatedProducts.find(p => p.id === item.productId);
+        if (prod) {
+          safeSetDoc(doc(db, "kiot_products", prod.id), prod).catch(err => {
+            console.error("Lỗi đồng bộ tồn kho sản phẩm hoàn lên Firestore:", err);
+          });
+        }
+      });
+
+      // Sync updated customer if any
+      if (targetInvoice.customerId) {
+        const cust = customers.find(c => c.id === targetInvoice.customerId);
+        if (cust) {
+          const updatedCust = {
+            ...cust,
+            totalSpent: Math.max(0, cust.totalSpent - targetInvoice.totalPayable),
+            points: Math.max(0, cust.points - targetInvoice.pointsEarned),
+            debt: targetInvoice.paymentMethod === "DEBT" ? Math.max(0, (cust.debt || 0) - targetInvoice.totalPayable) : (cust.debt || 0)
+          };
+          safeSetDoc(doc(db, "kiot_customers", cust.id), updatedCust).catch(err => {
+            console.error("Lỗi đồng bộ khách hàng hoàn điểm lên Firestore:", err);
+          });
+        }
+      }
+
+      // Sync new Cashbook reverse entry if any
+      if (updatedCashbookList.length > cashbook.length) {
+        const entry = updatedCashbookList[0];
+        safeSetDoc(doc(db, "kiot_cashbook", entry.id), entry).catch(err => {
+          console.error("Lỗi đồng bộ phiếu chi hoàn tiền lên Firestore:", err);
+        });
+      }
+    }
+
+    // Dispatch custom event for a beautiful toast
+    safeDispatchEvent("kiot-toast", {
+      type: "stock-warning", // use stock-warning for red/alert look
+      title: "ĐÃ HỦY HÓA ĐƠN",
+      message: `Hóa đơn ${targetInvoice.invoiceCode} đã được hủy. Hệ thống tự động hoàn kho ${targetInvoice.items.reduce((sum, item) => sum + item.quantity, 0)} sản phẩm và đảo dòng tiền.`
+    });
+  };
+
+  const handleUpdateProductStock = (productId: string, newStock: number) => {
+    const updated = products.map(p => p.id === productId ? { ...p, stock: Math.max(0, newStock) } : p);
+    saveProducts(updated);
+  };
+
+  // Reset database completely to defaults
+  const handleResetDatabase = () => {
+    if (currentStaff) {
+      const isOwner = currentStaff.email?.toLowerCase() === "congbaotruong8@gmail.com";
+      const isAllowed = isOwner || currentStaff.role === "OWNER" || currentStaff.role === "MANAGER";
+      if (!isAllowed) {
+        safeDispatchEvent("kiot-toast", {
+          type: "stock-warning",
+          title: "Quyền bị từ chối",
+          message: "Chỉ Chủ cửa hàng (Owner) hoặc Quản lý (Manager) mới có quyền reset cơ sở dữ liệu."
+        });
+        return;
+      }
+    }
+    setShowResetConfirmModal(true);
+  };
+
+  const executeResetDatabase = async () => {
+    setShowResetConfirmModal(false);
+    const prefix = trialInfo ? `kiot_trial_${trialInfo.id}_` : "kiot_";
+
+    // Helper to clear all kiot_ local storage keys, preserving session/identity keys
+    const clearKiotLocalStorageKeys = () => {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("kiot_")) {
+          // Preserve the critical session/identity keys
+          if (
+            key !== "kiot_current_staff" && 
+            key !== "kiot_theme" && 
+            key !== "kiot_trial_info" &&
+            key !== "kiot_deleted_trial_ids"
+          ) {
+            keysToRemove.push(key);
+          }
+        }
+      }
+      keysToRemove.forEach(k => localStorage.removeItem(k));
+    };
+
+    if (resetType === "hard") {
+      // 1. HARD RESET: Complete slate wipeout
+      const defaultSettingsForTrial = {
+        shopName: trialInfo ? trialInfo.shopName : "KiotX Store",
+        address: (trialInfo && trialInfo.address) || "Đang dùng thử KiotX",
+        phone: trialInfo ? trialInfo.phone : "0900000000",
+        taxRate: 0,
+        currency: "VND",
+        zaloNumber: trialInfo ? trialInfo.phone : "0900000000",
+        seoTitle: trialInfo ? trialInfo.shopName : "KiotX Store",
+        seoKeywords: "kiotx, shop",
+        eInvoiceEnabled: false
+      };
+
+      const keptStaff = currentStaff ? [currentStaff] : DEFAULT_STAFF;
+
+      if (trialInfo) {
+        // SaaS trial store complete hard reset
+        try {
+          const response = await fetch(`/api/kiot/sync/${trialInfo.id}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              products: [],
+              categories: [],
+              customers: [],
+              suppliers: [],
+              invoices: [],
+              staff: keptStaff,
+              settings: defaultSettingsForTrial,
+              audits: [],
+              purchaseOrders: [],
+              cashbook: [],
+              projects: [],
+              systemLogs: [],
+              cashShifts: []
+            })
+          });
+
+          if (response.ok) {
+            console.log("Đã đồng bộ hard reset database của dùng thử lên PostgreSQL thành công.");
+          } else {
+            throw new Error("Server sync error");
+          }
+        } catch (err) {
+          console.warn("Lỗi đồng bộ reset database lên PostgreSQL:", err);
+        }
+      }
+
+      // Clear local storage and reload to trigger clean initialization
+      clearKiotLocalStorageKeys();
+      window.location.reload();
+
+    } else {
+      // 2. SELECTIVE ROLLBACK: Keep master catalog lists, filter transactions based on target time
+      let targetDate = new Date();
+      if (selectedCheckpoint === "today") {
+        targetDate.setHours(0, 0, 0, 0);
+      } else if (selectedCheckpoint === "yesterday") {
+        targetDate.setDate(targetDate.getDate() - 1);
+        targetDate.setHours(0, 0, 0, 0);
+      } else if (selectedCheckpoint === "1hour") {
+        targetDate = new Date(Date.now() - 60 * 60 * 1000);
+      } else if (selectedCheckpoint === "custom") {
+        targetDate = new Date(customResetDateTime);
+      } else if (selectedCheckpoint === "registration") {
+        targetDate = trialInfo ? new Date(trialInfo.createdAt) : new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      }
+
+      const isBeforeOrEqual = (dateStr?: string) => {
+        if (!dateStr) return true;
+        try {
+          const d = new Date(dateStr);
+          if (isNaN(d.getTime())) {
+            // Try fallback parsing if just YYYY-MM-DD format
+            return new Date(dateStr + "T00:00:00").getTime() <= targetDate.getTime();
+          }
+          return d.getTime() <= targetDate.getTime();
+        } catch (e) {
+          return true;
+        }
+      };
+
+      // Filter local lists
+      const filteredInvoices = invoices.filter(item => isBeforeOrEqual(item.date));
+      const filteredCashbook = cashbook.filter(item => isBeforeOrEqual(item.date));
+      const filteredAudits = audits.filter(item => isBeforeOrEqual(item.date));
+      const filteredPurchaseOrders = purchaseOrders.filter(item => isBeforeOrEqual(item.date));
+      const filteredProjects = projects.filter(item => isBeforeOrEqual(item.startDate));
+      const filteredCashShifts = cashShifts.filter(item => isBeforeOrEqual(item.startTime));
+      const filteredSystemLogs = systemLogs.filter(item => isBeforeOrEqual(item.timestamp));
+
+      if (trialInfo) {
+        // SaaS trial store selective rollback sync
+        try {
+          const response = await fetch(`/api/kiot/sync/${trialInfo.id}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              products,
+              categories,
+              customers,
+              suppliers,
+              staff,
+              settings,
+              invoices: filteredInvoices,
+              cashbook: filteredCashbook,
+              audits: filteredAudits,
+              purchaseOrders: filteredPurchaseOrders,
+              projects: filteredProjects,
+              systemLogs: filteredSystemLogs,
+              cashShifts: filteredCashShifts
+            })
+          });
+
+          if (response.ok) {
+            console.log("Đã đồng bộ selective rollback lên PostgreSQL.");
+          } else {
+            throw new Error("Server sync error");
+          }
+        } catch (err) {
+          console.warn("Lỗi đồng bộ selective rollback lên PostgreSQL:", err);
+        }
+      }
+
+      // Save filtered lists back to local storage to persist instantly
+      localStorage.setItem(`${prefix}invoices`, JSON.stringify(filteredInvoices));
+      localStorage.setItem(`${prefix}cashbook`, JSON.stringify(filteredCashbook));
+      localStorage.setItem(`${prefix}audits`, JSON.stringify(filteredAudits));
+      localStorage.setItem(`${prefix}purchase_orders`, JSON.stringify(filteredPurchaseOrders));
+      localStorage.setItem(`${prefix}projects`, JSON.stringify(filteredProjects));
+      localStorage.setItem(`${prefix}cash_shifts`, JSON.stringify(filteredCashShifts));
+      localStorage.setItem(`${prefix}system_logs`, JSON.stringify(filteredSystemLogs));
+
+      safeDispatchEvent("kiot-toast", {
+        type: "success",
+        title: "Đã phục hồi dữ liệu! 🕒",
+        message: `Hệ thống đã quay ngược cơ sở dữ liệu về trạng thái lúc ${targetDate.toLocaleTimeString("vi-VN")} ngày ${targetDate.toLocaleDateString("vi-VN")}`
+      });
+
+      // Reload to reflect all state updates cleanly
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    }
+  };
+
+  const handleDeleteReportsData = (
+    type: "invoices" | "cashbook" | "all",
+    rangeType: "day" | "month" | "year" | "all",
+    value: string
+  ) => {
+    const isMatch = (itemDate: string) => {
+      if (rangeType === "all") return true;
+      if (!itemDate) return false;
+      const datePart = itemDate.split("T")[0]; // YYYY-MM-DD
+      if (rangeType === "day") {
+        return datePart === value;
+      }
+      if (rangeType === "month") {
+        return datePart.substring(0, 7) === value; // YYYY-MM
+      }
+      if (rangeType === "year") {
+        return datePart.substring(0, 4) === value; // YYYY
+      }
+      return false;
+    };
+
+    let deletedInvoicesCount = 0;
+    let deletedCashbookCount = 0;
+
+    if (type === "invoices" || type === "all") {
+      const originalLen = invoices.length;
+      const matchedInvs = invoices.filter(inv => isMatch(inv.date));
+      const remainingInvoices = invoices.filter(inv => !isMatch(inv.date));
+      deletedInvoicesCount = originalLen - remainingInvoices.length;
+      saveInvoices(remainingInvoices);
+
+      // Delete from Firestore if online
+      if (isOnline) {
+        matchedInvs.forEach(inv => {
+          safeDeleteDoc(doc(db, "kiot_invoices", inv.id)).catch(err => {
+            console.error("Lỗi xóa hóa đơn trên Firestore:", err);
+          });
+        });
+      }
+    }
+
+    if (type === "cashbook" || type === "all") {
+      const originalLen = cashbook.length;
+      const matchedEntries = cashbook.filter(entry => isMatch(entry.date));
+      const remainingCashbook = cashbook.filter(entry => !isMatch(entry.date));
+      deletedCashbookCount = originalLen - remainingCashbook.length;
+      saveCashbook(remainingCashbook);
+
+      // Delete from Firestore if online
+      if (isOnline) {
+        matchedEntries.forEach(entry => {
+          safeDeleteDoc(doc(db, "kiot_cashbook", entry.id)).catch(err => {
+            console.error("Lỗi xóa sổ quỹ trên Firestore:", err);
+          });
+        });
+      }
+    }
+
+    safeDispatchEvent("kiot-toast", {
+      type: "success",
+      title: "Xóa dữ liệu thành công",
+      message: `Đã xóa ${deletedInvoicesCount} hóa đơn và ${deletedCashbookCount} phiếu thu chi trong khoảng thời gian đã chọn.`
+    });
+
+    return { deletedInvoicesCount, deletedCashbookCount };
+  };
+
+  // Toggle Theme helper
+  const handleToggleTheme = () => {
+    const newTheme = theme === "dark" ? "light" : "dark";
+    setTheme(newTheme);
+    localStorage.setItem("kiot_theme", newTheme);
+  };
+
+  if (!settings) {
+    return (
+      <div className="min-h-screen bg-stone-950 flex items-center justify-center text-stone-400">
+        <div className="flex flex-col items-center gap-3">
+          <RefreshCw className="h-8 w-8 animate-spin text-emerald-400" />
+          <span className="font-bold text-xs uppercase tracking-widest">Đang khởi động hệ thống KiotX...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentStaff) {
+    return (
+      <KiotLogin
+        staffList={staff}
+        onSelectStaff={handleSelectSimulatedStaff}
+        onGoogleLogin={handleGoogleLogin}
+        isSyncing={isSyncing}
+        shopName={settings.shopName}
+      />
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-stone-950 text-stone-200 selection:bg-amber-500 selection:text-stone-950 font-sans antialiased overflow-x-hidden">
+    <div className={`min-h-screen font-sans antialiased transition-all overflow-x-hidden ${
+      theme === "dark" 
+        ? "bg-stone-950 text-stone-200 selection:bg-emerald-500 selection:text-stone-950" 
+        : "bg-stone-50 text-stone-800 selection:bg-emerald-500 selection:text-stone-950"
+    }`}>
       
-      {/* 1. Header Navigation */}
-      <Header
-        onNavigate={handleNavigate}
-        activeSection={activeSection}
-        onOpenChat={() => setIsChatOpen(true)}
-        onOpenAdmin={() => setIsAdminOpen(true)}
-      />
-
-      {/* 2. Hero Section */}
-      <Hero
-        onNavigate={handleNavigate}
-        onOpenChat={() => handleOpenChatWithPrompt("Xin chào KTS Minh Khôi! Tôi muốn tìm hiểu dịch vụ tư vấn đo đạc khảo sát thực tế tại nhà, Trương Gia Phát có thu phí khảo sát không?")}
-      />
-
-      {/* 3. Style Quiz (Trắc Nghiệm Gu Thẩm Mỹ) */}
-      <StyleQuiz onOpenChatWithPrompt={handleOpenChatWithPrompt} />
-
-      {/* 3.5. User Preferences (Gợi ý sở thích người dùng & Giải pháp vật liệu) */}
-      <UserPreferences onOpenChatWithPrompt={handleOpenChatWithPrompt} />
-
-      {/* 4. Price Calculator (Dự Toán Chi Phí) */}
-      <PriceCalculator onOpenChatWithPrompt={handleOpenChatWithPrompt} />
-
-      {/* 5. Project Showcase (Dự Án Thực Tế) */}
-      <ProjectShowcase />
-
-      {/* 6. Work Process (Quy Trình Thi Công) */}
-      <section id="process" className="py-20 bg-stone-950 border-t border-stone-800/80">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          {/* Section Header */}
-          <div className="text-center space-y-4 mb-16">
-            <span className="text-xs font-bold uppercase tracking-widest text-amber-500 bg-amber-500/10 px-3 py-1 rounded-full">
-              Cam Kết Tiến Độ
-            </span>
-            <h2 className="text-3xl sm:text-4xl font-serif text-stone-100">
-              Quy Trình Làm Việc Chuyên Nghiệp
-            </h2>
-            <p className="text-stone-400 max-w-xl mx-auto text-sm sm:text-base">
-              Chúng tôi tối ưu hóa từng bước từ khâu lên ý tưởng 3D đến sản xuất hoàn thiện, đảm bảo bàn giao đúng hạn và tính thẩm mỹ cao nhất.
-            </p>
-          </div>
-
-          {/* Process Timeline Grid */}
-          <div className="grid md:grid-cols-5 gap-8 relative">
-            {WORK_PROCESS.map((p, idx) => (
-              <div key={idx} className="relative group p-6 rounded-2xl bg-stone-900/40 border border-stone-800/60 hover:border-amber-500/30 transition-all flex flex-col justify-between h-full">
-                {/* Horizontal flow line for desktops */}
-                {idx < 4 && (
-                  <div className="hidden md:block absolute top-12 left-[100%] w-[calc(100%-48px)] h-[1px] bg-gradient-to-r from-stone-800 to-transparent z-0" />
-                )}
-                
-                <div className="space-y-4 relative z-10">
-                  <div className="text-4xl font-mono font-black text-stone-800 group-hover:text-amber-500/20 transition-colors">
-                    {p.step}
-                  </div>
-                  <h3 className="text-stone-100 font-serif font-bold text-base">
-                    {p.title}
-                  </h3>
-                  <p className="text-stone-400 text-xs leading-relaxed">
-                    {p.desc}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
+      {/* GLOWING WEB3 BG GRID ACCENTS (Only in dark theme for high fidelity aesthetics) */}
+      {theme === "dark" && (
+        <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 opacity-25">
+          <div className="absolute top-[-10%] left-[-10%] h-[500px] w-[500px] rounded-full bg-emerald-500/10 blur-[120px]" />
+          <div className="absolute bottom-[-10%] right-[-10%] h-[500px] w-[500px] rounded-full bg-indigo-500/10 blur-[120px]" />
+          <div className="absolute top-[40%] right-[20%] h-[400px] w-[400px] rounded-full bg-amber-500/5 blur-[120px]" />
+          <div className="absolute inset-0 bg-[linear-gradient(to_right,#1f1f1f_1px,transparent_1px),linear-gradient(to_bottom,#1f1f1f_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)]" />
         </div>
-      </section>
+      )}
 
-      {/* 6.5. Blog & Tips Section (Database backed) */}
-      <BlogSection key={blogRefreshKey} />
-
-      {/* 7. Customer Testimonials */}
-      <section className="py-20 bg-stone-900 border-t border-stone-800/80">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          {/* Section Header */}
-          <div className="text-center space-y-4 mb-16">
-            <span className="text-xs font-bold uppercase tracking-widest text-amber-500 bg-amber-500/10 px-3 py-1 rounded-full">
-              Khách Hàng Nói Về Trương Gia Phát
-            </span>
-            <h2 className="text-3xl sm:text-4xl font-serif text-stone-100">
-              Sự Hài Lòng Làm Nên Uy Tín
-            </h2>
-            <p className="text-stone-400 max-w-xl mx-auto text-sm sm:text-base">
-              Hơn 500+ ngôi nhà đã được hoàn thiện là bấy nhiêu niềm hạnh phúc được lan tỏa. 
-            </p>
-          </div>
-
-          <div className="grid md:grid-cols-3 gap-6">
-            {[
-              {
-                name: "Anh Hoàng Tuấn",
-                role: "Chủ căn hộ Penthouse 145m² - Vista An Phú",
-                quote: "Tôi thực sự ấn tượng với tinh thần trách nhiệm của Trương Gia Phát. Bản vẽ 3D như thế nào thì thực tế thi công hoàn thiện giống đến 95%. Xưởng trần vách thạch cao của họ đóng đồ rất sắc nét, phẳng đẹp tuyệt đối.",
-                rating: 5,
-                image: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&h=120&q=80"
-              },
-              {
-                name: "Chị Khánh Linh",
-                role: "Chủ biệt thự Vinhomes Riverside",
-                quote: "Phong cách trần thạch cao giật cấp LED thi công rất khó vì đòi hỏi cân thăng bằng và ghép góc mỏ neo chính xác tuyệt đối. Trương Gia Phát đã làm xuất sắc từng góc cạnh. Chế độ bảo hành 3 năm của họ làm tôi hoàn toàn an tâm.",
-                rating: 5,
-                image: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=120&h=120&q=80"
-              },
-              {
-                name: "Bác Sĩ Minh Khang",
-                role: "Chủ căn hộ Japandi 85m² - Sky Garden",
-                quote: "Là một người bận rộn, tôi ký hợp đồng chìa khóa trao tay. Toàn bộ khâu khảo sát, lên bản thiết kế, sản xuất và thi công lắp ráp diễn ra trơn tru đúng tiến độ. Gia đình tôi vô cùng ưng ý căn nhà mới sạch sẽ, ấm cúng.",
-                rating: 5,
-                image: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=120&h=120&q=80"
-              }
-            ].map((t, idx) => (
-              <div key={idx} className="p-6 sm:p-8 rounded-2xl bg-stone-950 border border-stone-800/80 space-y-4">
-                <div className="flex gap-1">
-                  {[...Array(t.rating)].map((_, i) => (
-                    <span key={i} className="text-amber-500 text-sm">★</span>
-                  ))}
+      {/* MASTER FLEX CONTAINER (Sidebar + Main panel) */}
+      <div className="relative z-10 flex flex-col md:flex-row min-h-screen md:h-screen md:overflow-hidden">
+        
+        {/* SIDEBAR NAVIGATION RAIL (Web3 Neon Cyberpunk style) */}
+        <aside className={`shrink-0 flex flex-col justify-between transition-all duration-300 z-20 md:h-full md:overflow-y-auto scrollbar-thin scrollbar-thumb-stone-800 scrollbar-track-transparent ${
+          isSidebarOpen 
+            ? "w-full md:w-64 p-4 border-b md:border-b-0 md:border-r opacity-100" 
+            : "w-0 h-0 p-0 md:w-0 overflow-hidden border-0 opacity-0 pointer-events-none"
+        } ${
+          theme === "dark" 
+            ? "bg-stone-900/80 border-stone-850 backdrop-blur-xl" 
+            : "bg-white border-stone-200"
+        }`}>
+          <div className="space-y-6">
+            {/* Logo and Brand Title */}
+            <div className="flex items-center justify-between px-2 pb-4 border-b border-stone-850/60 gap-2">
+              <div className="flex items-center gap-3 overflow-hidden">
+                <div className="h-10 w-10 shrink-0 rounded-2xl bg-gradient-to-tr from-emerald-500 to-indigo-500 p-0.5 shadow-lg shadow-emerald-500/10">
+                  <div className="h-full w-full rounded-[14px] bg-stone-950 flex items-center justify-center font-black text-emerald-400 font-mono text-base tracking-tighter">
+                    Kx
+                  </div>
                 </div>
-                <p className="text-stone-300 text-xs sm:text-sm italic leading-relaxed">
-                  "{t.quote}"
-                </p>
-                <div className="flex items-center gap-3 pt-3 border-t border-stone-900">
-                  <div className="h-10 w-10 rounded-full overflow-hidden shrink-0 border border-stone-800">
-                    <img src={t.image} alt={t.name} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                  </div>
-                  <div>
-                    <h4 className="text-stone-200 font-bold text-xs sm:text-sm">{t.name}</h4>
-                    <p className="text-stone-500 text-[10px] sm:text-xs">{t.role}</p>
-                  </div>
+                <div className="space-y-0.5 leading-none">
+                  <h1 className="text-sm font-black uppercase tracking-wider text-stone-100 flex items-center gap-1">
+                    <span className="truncate">KiotX PRO</span>
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                  </h1>
+                  <p className="text-[10px] text-stone-500 font-bold uppercase tracking-widest leading-none">v1.2.6 (Bản chuẩn)</p>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-      </section>
+              <button
+                onClick={handleToggleSidebar}
+                className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+                  theme === "dark" 
+                    ? "bg-stone-950 text-stone-400 border-stone-850 hover:bg-stone-900 hover:text-emerald-400" 
+                    : "bg-stone-100 text-stone-600 border-stone-200 hover:bg-stone-200 hover:text-stone-800"
+                }`}
+                title="Đóng thanh công cụ"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+            </div>
 
-      {/* 8. Call to Action Callback Registration Form */}
-      <section className="py-20 bg-stone-950 border-t border-stone-800/80">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6">
-          <div className="bg-gradient-to-br from-stone-900 to-stone-950 border border-stone-800 rounded-3xl p-6 sm:p-12 shadow-2xl relative overflow-hidden">
-            <div className="absolute top-0 right-0 h-48 w-48 rounded-full bg-amber-500/5 blur-3xl" />
-            
-            {!isFormSubmitted ? (
-              <div className="space-y-8">
-                <div className="text-center space-y-3">
-                  <h3 className="text-2xl sm:text-3xl font-serif text-stone-100 font-bold">
-                    Đăng Ký Tư Vấn Bản Vẽ 3D Miễn Phí
-                  </h3>
-                  <p className="text-stone-400 text-xs sm:text-sm max-w-lg mx-auto">
-                    Để lại thông tin, kiến trúc sư Trương Gia Phát sẽ gọi điện tư vấn trực tiếp, lên phương án mặt bằng 2D và khảo sát thực tế đo đạc tận nơi hoàn toàn miễn phí.
-                  </p>
-                </div>
-
-                <form onSubmit={handleFormSubmit} className="space-y-4">
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    {/* Name */}
-                    <div className="space-y-1">
-                      <label className="block text-[10px] uppercase font-bold text-stone-400">Họ & Tên *</label>
-                      <input
-                        type="text"
-                        required
-                        value={contactName}
-                        onChange={(e) => setContactName(e.target.value)}
-                        placeholder="Nguyễn Văn A"
-                        className="w-full px-4 py-3 rounded-xl bg-stone-950 border border-stone-800 text-stone-200 text-sm focus:outline-none focus:border-amber-500"
+            {/* SaaS Trial status on Sidebar if present */}
+            {trialInfo && (
+              <div className={`p-3 rounded-xl space-y-2 ${
+                theme === "dark" ? "bg-stone-950/60 border border-stone-850/80" : "bg-stone-100/80 border border-stone-200"
+              }`}>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[9px] font-bold">
+                    <span className="text-amber-500 uppercase flex items-center gap-1">
+                      <Sparkles className="h-2.5 w-2.5 animate-pulse" />
+                      {trialInfo.status === "CONVERTED" ? "Bản quyền PRO" : "Dùng thử 20 ngày"}
+                    </span>
+                    <span className={trialInfo.status === "CONVERTED" ? "text-emerald-400" : (trialDaysLeft !== null && trialDaysLeft <= 3 ? "text-rose-400" : "text-emerald-400")}>
+                      {trialInfo.status === "CONVERTED" ? "Trọn đời" : `Còn ${trialDaysLeft !== null ? Math.max(0, trialDaysLeft) : 0} ngày`}
+                    </span>
+                  </div>
+                  {trialInfo.status !== "CONVERTED" ? (
+                    <div className="w-full bg-stone-900 rounded-full h-1 overflow-hidden border border-stone-850/60">
+                      <div 
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          trialDaysLeft !== null && trialDaysLeft <= 3 ? "bg-rose-500 animate-pulse" : "bg-emerald-500"
+                        }`} 
+                        style={{ width: `${Math.max(0, Math.min(100, (trialDaysLeft !== null ? trialDaysLeft : 0) / 20 * 100))}%` }} 
                       />
                     </div>
-                    
-                    {/* Phone */}
-                    <div className="space-y-1">
-                      <label className="block text-[10px] uppercase font-bold text-stone-400">Số Điện Thoại *</label>
-                      <input
-                        type="tel"
-                        required
-                        value={contactPhone}
-                        onChange={(e) => setContactPhone(e.target.value)}
-                        placeholder="0901234567"
-                        className="w-full px-4 py-3 rounded-xl bg-stone-950 border border-stone-800 text-stone-200 text-sm focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    {/* Property type selection */}
-                    <div className="space-y-1">
-                      <label className="block text-[10px] uppercase font-bold text-stone-400">Hạng Mục Cần Tư Vấn</label>
-                      <select
-                        value={contactProperty}
-                        onChange={(e) => setContactProperty(e.target.value)}
-                        className="w-full px-4 py-3 rounded-xl bg-stone-950 border border-stone-800 text-stone-300 text-sm focus:outline-none focus:border-amber-500"
-                      >
-                        <option value="tran-thach-cao">Thi Công Trần Thạch Cao</option>
-                        <option value="go-nhua-composite">Ốp Trần Vách Gỗ Nhựa Composite</option>
-                        <option value="pvc-van-da">Ốp Vách PVC Vân Đá Luxury</option>
-                        <option value="tron-goi">Thi Công Trọn Gói Trần & Vách</option>
-                      </select>
-                    </div>
-
-                    {/* Note message */}
-                    <div className="space-y-1">
-                      <label className="block text-[10px] uppercase font-bold text-stone-400">Yêu cầu thêm (nếu có)</label>
-                      <input
-                        type="text"
-                        value={contactMsg}
-                        onChange={(e) => setContactMsg(e.target.value)}
-                        placeholder="Ví dụ: Căn 3 phòng ngủ, phong cách Japandi..."
-                        className="w-full px-4 py-3 rounded-xl bg-stone-950 border border-stone-800 text-stone-200 text-sm focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="pt-4">
-                    <button
-                      type="submit"
-                      className="w-full py-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-sm uppercase tracking-wider transition-all shadow-lg shadow-amber-500/10 cursor-pointer"
-                    >
-                      Đăng Ký Khảo Sát & Nhận Báo Giá 3D
-                    </button>
-                  </div>
-                </form>
-              </div>
-            ) : (
-              <div className="text-center py-8 space-y-6 animate-fade-in">
-                <div className="mx-auto h-16 w-16 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-500">
-                  <CheckCircle className="h-8 w-8" />
-                </div>
-                <div className="space-y-2">
-                  <h3 className="text-xl sm:text-2xl font-serif text-stone-100 font-bold">
-                    Đăng Ký Thành Công!
-                  </h3>
-                  <p className="text-stone-400 text-xs sm:text-sm max-w-md mx-auto">
-                    Cảm ơn anh/chị <strong>{contactName}</strong>. Kiến trúc sư Minh Khôi sẽ chủ động liên hệ qua số điện thoại <strong>{contactPhone}</strong> trong vòng 15 phút tới để tư vấn chi tiết nhất.
-                  </p>
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-3 justify-center pt-4">
-                  <a
-                    href="https://zalo.me/0901234567"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-stone-100 font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2"
-                  >
-                    <span>Nhắn Zalo Nhận Mẫu 3D Gần Nhất</span>
-                  </a>
+                  ) : (
+                    <div className="w-full bg-emerald-500/10 rounded h-1 overflow-hidden" />
+                  )}
+                  {/* Button Gia hạn dùng thử */}
                   <button
-                    onClick={resetForm}
-                    className="px-6 py-3 rounded-xl bg-stone-900 hover:bg-stone-850 text-stone-300 text-xs font-semibold"
+                    onClick={() => setIsOpenTrialModal(true)}
+                    className="w-full mt-1.5 px-2 py-1 bg-indigo-600/10 hover:bg-indigo-600/25 border border-indigo-500/20 hover:border-indigo-500/40 text-[9px] font-bold uppercase tracking-wider text-indigo-300 hover:text-white rounded flex items-center justify-center gap-1 transition-all cursor-pointer"
                   >
-                    Gửi yêu cầu khác
+                    <Sparkles className="h-2.5 w-2.5 shrink-0 animate-pulse" />
+                    <span>{trialInfo.status === "CONVERTED" ? "Thông tin Bản quyền" : "Gia hạn dùng thử"}</span>
                   </button>
                 </div>
               </div>
             )}
-          </div>
-        </div>
-      </section>
 
-      {/* 9. Footer */}
-      <footer className="bg-stone-950 border-t border-stone-900 py-16 text-stone-400 text-xs sm:text-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 border-b border-stone-900 pb-12">
-            {/* Col 1: Logo & Vision */}
-            <div className="lg:col-span-4 space-y-4">
-              <div className="flex items-center gap-2">
-                <img
-                  src="/src/assets/images/tgp_logo_1782393737704.jpg"
-                  alt="TRƯƠNG GIA PHÁT Logo"
-                  referrerPolicy="no-referrer"
-                  className="h-10 w-10 rounded-lg object-cover shadow-sm border border-amber-500/20"
-                />
-                <span className="text-base sm:text-lg font-bold tracking-wider text-amber-500 font-sans uppercase">
-                  TRƯƠNG GIA PHÁT
+            {/* Main Tabs Navigation */}
+            <nav className="space-y-1.5">
+              {[
+                { id: "dashboard", label: "Tổng quan", desc: "Doanh thu, báo cáo, tồn kho", icon: LayoutDashboard },
+                { id: "pos", label: "Bán hàng POS", desc: "Mở quầy bán hàng trực quan", icon: ShoppingCart, highlight: true },
+                { id: "products", label: "Hàng hóa & Kho", desc: "Quản lý tồn, kiểm kho thực tế", icon: Package },
+                { id: "partners", label: "Khách hàng & NCC", desc: "Đối tác VIP, tích điểm, NCC", icon: Users },
+                { id: "cashbook", label: "Sổ Quỹ", desc: "Dòng tiền thu chi, két quỹ", icon: Wallet },
+                { id: "settings", label: "Thiết lập", desc: "Nhân viên, thông tin biên lai", icon: Settings },
+                ...(currentStaff?.email?.toLowerCase() === "congbaotruong8@gmail.com" ? [
+                  { id: "trials_manager", label: "Dùng thử SaaS", desc: "Quản lý cấp phép & dùng thử", icon: Sparkles }
+                ] : [])
+              ].map(item => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                const isAllowed = isTabAllowed(item.id, currentStaff);
+                
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={`w-full p-3 rounded-xl flex items-center justify-between transition-all text-left relative cursor-pointer group ${
+                      isActive 
+                        ? item.highlight 
+                          ? "bg-emerald-500 text-stone-950 font-black shadow-[0_0_15px_rgba(16,185,129,0.25)]" 
+                          : item.id === "trials_manager"
+                            ? "bg-indigo-600 text-stone-100 border-l-4 border-indigo-400 font-bold shadow-[0_0_15px_rgba(79,70,229,0.25)]"
+                            : "bg-stone-800 text-stone-100 border-l-4 border-emerald-500 font-bold"
+                        : !isAllowed
+                          ? "opacity-60 hover:opacity-85 text-stone-500 hover:text-stone-400"
+                          : theme === "dark"
+                            ? "hover:bg-stone-850 text-stone-400 hover:text-stone-200"
+                            : "hover:bg-stone-100 text-stone-600 hover:text-stone-800"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Icon className={`h-5 w-5 shrink-0 ${
+                        isActive 
+                          ? "text-inherit" 
+                          : item.highlight 
+                            ? "text-emerald-400 group-hover:animate-bounce" 
+                            : item.id === "trials_manager"
+                              ? "text-indigo-400 animate-pulse"
+                              : !isAllowed
+                                ? "text-stone-600"
+                                : "text-stone-500"
+                      }`} />
+                      <div className="space-y-0.5 leading-none">
+                        <span className="text-xs uppercase tracking-wider font-extrabold block">{item.label}</span>
+                        <span className={`text-[9px] block ${isActive ? "text-inherit opacity-75" : "text-stone-500"}`}>{item.desc}</span>
+                      </div>
+                    </div>
+
+                    {!isAllowed && (
+                      <span className="text-stone-600 group-hover:text-amber-500 transition-colors" title="Bị hạn chế quyền truy cập">
+                        <Lock className="h-3.5 w-3.5" />
+                      </span>
+                    )}
+
+                    {item.id === "pos" && isAllowed && !isActive && (
+                      <span className="absolute right-3.5 px-1.5 py-0.5 text-[8px] bg-emerald-500/10 text-emerald-400 font-bold rounded-full border border-emerald-500/20 animate-pulse">
+                        LIVE
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+
+          {/* Sidebar Footer Controls */}
+          <div className="space-y-3.5 pt-6 border-t border-stone-850/60">
+            {/* Quick Theme Toggle & Database cleaner */}
+            <div className="flex items-center justify-between px-1">
+              <button
+                onClick={handleToggleTheme}
+                className={`p-2 rounded-lg border transition-all cursor-pointer ${
+                  theme === "dark" 
+                    ? "bg-stone-950 text-amber-400 border-stone-850 hover:bg-stone-900" 
+                    : "bg-stone-100 text-stone-600 border-stone-200 hover:bg-stone-200"
+                }`}
+                title={theme === "dark" ? "Chuyển sang chế độ sáng" : "Chuyển sang chế độ tối"}
+              >
+                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
+
+              <button
+                onClick={handleResetDatabase}
+                className="px-3.5 py-2 rounded-lg bg-stone-950 hover:bg-rose-950/40 border border-stone-850 hover:border-rose-900 text-stone-500 hover:text-rose-400 text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer"
+                title="Khôi phục dữ liệu demo ban đầu"
+              >
+                Reset DB
+              </button>
+            </div>
+
+            {/* Active Cashier Card */}
+            {currentStaff && (
+              <div className="flex items-center justify-between p-2 rounded-xl bg-stone-950/40 border border-stone-850/50">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-7 w-7 rounded-full bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center font-bold text-[10px] text-emerald-400">
+                    {currentStaff.name.split(" ").map(w => w.charAt(0)).join("").slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="space-y-0.5 leading-none">
+                    <span className="text-[10px] font-bold text-stone-300 block truncate max-w-[100px]" title={currentStaff.name}>
+                      {currentStaff.name}
+                    </span>
+                    <span className="text-[8px] text-stone-500 block uppercase font-bold tracking-wider">
+                      {currentStaff.role === "OWNER" ? "Chủ cửa hàng" : currentStaff.role === "MANAGER" ? "Quản lý" : "Thu ngân"}
+                    </span>
+                  </div>
+                </div>
+                
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="p-1.5 rounded-lg hover:bg-stone-900 text-stone-500 hover:text-stone-300 transition-all cursor-pointer"
+                  title="Đăng xuất khỏi quầy"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        </aside>
+
+        {/* MAIN DISPLAY REGION (Top Header Bar + Inner Content Panel) */}
+        <main className="flex-1 flex flex-col min-h-screen md:h-full md:overflow-y-auto scrollbar-thin scrollbar-thumb-stone-800 scrollbar-track-transparent">
+          
+          {/* TOP BAR PANEL (越南/Bình Dương Live Headquarter Indicators) */}
+          <header className={`border-b p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 transition-all ${
+            theme === "dark" 
+              ? "bg-stone-900/60 border-stone-850 backdrop-blur-md" 
+              : "bg-white border-stone-200"
+          }`}>
+            <div className="flex items-center gap-3">
+              {/* Sidebar Collapse/Expand Toggle Button */}
+              <button
+                onClick={handleToggleSidebar}
+                className={`p-2 rounded-xl border transition-all cursor-pointer flex items-center justify-center ${
+                  !isSidebarOpen 
+                    ? theme === "dark"
+                      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)] animate-pulse"
+                      : "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+                    : theme === "dark"
+                      ? "bg-stone-950 text-stone-400 border-stone-850 hover:bg-stone-900 hover:text-stone-200"
+                      : "bg-stone-100 text-stone-600 border-stone-200 hover:bg-stone-200 hover:text-stone-800"
+                }`}
+                title={isSidebarOpen ? "Đóng thanh công cụ" : "Mở thanh công cụ (Menu)"}
+              >
+                {isSidebarOpen ? (
+                  <Menu className="h-4 w-4 shrink-0" />
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <Menu className="h-4 w-4 shrink-0" />
+                    <span className="text-[10px] font-black uppercase tracking-wider pr-1">MỞ MENU</span>
+                  </div>
+                )}
+              </button>
+
+              {/* Dynamic Screen Title */}
+              <h2 className="text-sm font-black uppercase tracking-widest text-stone-100 flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+                <span>
+                  {activeTab === "dashboard" ? "Bảng Điều Khiển Tổng Quan" :
+                   activeTab === "pos" ? "Quầy Thu Ngân Bán Hàng" :
+                   activeTab === "products" ? "Quản Lý Hàng Hóa & Kiểm Kho" :
+                   activeTab === "partners" ? "Đối Tác Khách Hàng & Nhà Cung Cấp" : 
+                   "Thiết Lập Hệ Thống"}
+                </span>
+              </h2>
+            </div>
+
+            {/* Real-time clocks, status, and AI trigger */}
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              {/* Connection Status & Simulation Switcher */}
+              <button
+                onClick={() => {
+                  const targetState = !isOnline;
+                  setIsOnline(targetState);
+                  if (!targetState) {
+                    safeDispatchEvent("kiot-toast", {
+                      type: "stock-warning",
+                      title: "Đã ngắt kết nối mạng",
+                      message: "Thiết bị chuyển sang chế độ ngoại tuyến (Offline). Bạn vẫn có thể tiếp tục bán hàng bình thường."
+                    });
+                  } else {
+                    safeDispatchEvent("kiot-toast", {
+                      type: "success",
+                      title: "Đã khôi phục kết nối",
+                      message: "Thiết bị kết nối trực tuyến trở lại. Hệ thống sẽ tự động đồng bộ hóa hóa đơn."
+                    });
+                  }
+                }}
+                disabled={isSyncing}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-bold uppercase tracking-wider flex items-center gap-2 transition-all cursor-pointer ${
+                  isOnline 
+                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/15" 
+                    : "bg-amber-500/10 text-amber-500 border-amber-500/35 hover:bg-amber-500/15"
+                }`}
+                title={isOnline ? "Bấm để mô phỏng ngắt kết nối mạng (Bán hàng Offline)" : "Bấm để mô phỏng kết nối mạng trực tuyến (Tự đồng bộ)"}
+              >
+                {isSyncing ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                ) : isOnline ? (
+                  <Wifi className="h-3.5 w-3.5 text-emerald-400" />
+                ) : (
+                  <WifiOff className="h-3.5 w-3.5 text-amber-500 animate-pulse" />
+                )}
+                <span>{isSyncing ? "Đang đồng bộ..." : isOnline ? "Trực tuyến" : "Ngoại tuyến (Offline)"}</span>
+                {offlineQueue.length > 0 && (
+                  <span className="ml-1 bg-amber-500 text-stone-950 text-[10px] px-1.5 py-0.5 rounded font-mono font-black animate-bounce">
+                    {offlineQueue.length}
+                  </span>
+                )}
+              </button>
+
+              <div className={`px-3 py-1.5 rounded-xl border font-mono text-xs flex items-center gap-2 ${
+                theme === "dark" ? "bg-stone-950 border-stone-850 text-stone-300" : "bg-stone-100 border-stone-200 text-stone-700"
+              }`}>
+                <Clock className="h-3.5 w-3.5 text-emerald-400" />
+                <span className="font-bold">{liveTime || "--:--:--"}</span>
+                <span className="text-[9px] bg-stone-900 text-stone-500 font-sans px-1.5 py-0.5 rounded uppercase font-extrabold border border-stone-800">
+                  ICT (GMT+7)
                 </span>
               </div>
-              <p className="text-stone-400 text-xs max-w-sm leading-relaxed">
-                Đơn vị tư vấn, thiết kế và thi công hoàn thiện trần thạch cao Vĩnh Tường chính hãng, ốp vách gỗ nhựa Composite sọc lam sóng, nhựa PVC vân đá cao cấp. Uy tín làm nên chất lượng công trình.
-              </p>
-              <div className="flex flex-col gap-2 pt-2 text-stone-300 text-xs font-semibold">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="h-4 w-4 text-amber-500 shrink-0" />
-                  <span>Khung xương Vĩnh Tường chuẩn hãng</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Award className="h-4 w-4 text-amber-500 shrink-0" />
-                  <span>Bảo hành chống ẩm nứt vỡ đến 3 năm</span>
-                </div>
+
+              {/* Bot trigger with glow badge */}
+              <button
+                onClick={() => setIsChatOpen(true)}
+                className="px-4 py-1.5 bg-emerald-500/10 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 hover:border-emerald-500/50 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.06)] animate-pulse transition-all"
+              >
+                <Bot className="h-4.5 w-4.5" />
+                <span>Trợ Lý AI</span>
+              </button>
+            </div>
+          </header>
+
+          {/* Offline Mode Warning Banner */}
+          {!isOnline && (
+            <div className="bg-amber-500 text-stone-950 px-6 py-2.5 text-xs font-black uppercase tracking-wider flex flex-col sm:flex-row items-center justify-between gap-2 border-b border-amber-600 shadow-md">
+              <div className="flex items-center gap-2">
+                <WifiOff className="h-4 w-4 animate-bounce text-stone-950 shrink-0" />
+                <span>Bạn đang hoạt động ở chế độ Ngoại tuyến (Mất mạng). Bạn vẫn có thể thực hiện bán hàng & thanh toán bình thường!</span>
+              </div>
+              <div className="flex items-center gap-3">
+                {offlineQueue.length > 0 ? (
+                  <span className="bg-stone-900 text-amber-400 px-3 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wide border border-stone-800">
+                    Chờ đồng bộ: {offlineQueue.length} hóa đơn
+                  </span>
+                ) : (
+                  <span className="bg-emerald-950 text-emerald-400 px-3 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wide border border-emerald-900">
+                    Sẵn sàng đồng bộ
+                  </span>
+                )}
+                <button
+                  onClick={() => setIsOnline(true)}
+                  className="px-3 py-1 bg-stone-950 hover:bg-stone-900 text-white text-[10px] font-extrabold rounded-lg uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  Kết nối lại
+                </button>
               </div>
             </div>
+          )}
 
-            {/* Col 2: Legal Info */}
-            <div className="lg:col-span-4 space-y-4">
-              <h4 className="text-stone-200 font-semibold text-xs uppercase tracking-wider flex items-center gap-1.5">
-                <span>Thông Tin Doanh Nghiệp</span>
-              </h4>
-              <ul className="space-y-3 text-xs leading-relaxed">
-                <li>
-                  <strong className="text-stone-300 block">Tên Công Ty:</strong>
-                  <span className="text-stone-400">CÔNG TY TNHH THIẾT KẾ & THI CÔNG NỘI THẤT TRƯƠNG GIA PHÁT</span>
-                </li>
-                <li>
-                  <strong className="text-stone-300 block">Chủ Sở Hữu / Người Đại Diện:</strong>
-                  <span className="text-stone-400">CÔNG TY TNHH THIẾT KẾ & THI CÔNG NỘI THẤT TRƯƠNG GIA PHÁT</span>
-                </li>
-                <li>
-                  <strong className="text-stone-300 block">Mã Số Thuế:</strong>
-                  <span className="text-stone-400 font-mono tracking-wider font-semibold">3703472033</span>
-                </li>
-                <li className="flex items-start gap-2 pt-1">
-                  <MapPin className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="text-stone-300 block">Địa Chỉ Trụ Sở Chính:</strong>
-                    <span className="text-stone-400">số 11/DC1 Đường Bình Chuẩn 69, Tổ 35, Khu phố Bình Phước B, Phường An Phú, Thành phố Hồ Chí Minh, Việt Nam</span>
-                  </div>
-                </li>
-              </ul>
-            </div>
+          {/* INNER TAB PANEL ROUTER */}
+          <div className="flex-1 p-6 z-10 max-w-7xl w-full mx-auto">
+            <AnimatePresence mode="wait">
+              {trialInfo && 
+               trialInfo.status !== "CONVERTED" && 
+               (trialInfo.status === "EXPIRED" || (trialDaysLeft !== null && trialDaysLeft <= 0)) && 
+               currentStaff?.email?.toLowerCase() !== "congbaotruong8@gmail.com" ? (
+                <motion.div
+                  key="expired_lock"
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.25, ease: "easeOut" }}
+                  className="flex items-center justify-center min-h-[60vh] py-12"
+                >
+                  <div className="w-full max-w-xl bg-stone-900 border border-stone-850 rounded-3xl p-8 text-center space-y-6 shadow-2xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 h-32 w-32 bg-rose-500/5 rounded-full blur-2xl pointer-events-none" />
+                    
+                    <div className="h-16 w-16 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-500 mx-auto shadow-lg shadow-rose-500/5">
+                      <XCircle className="h-8 w-8 text-rose-500 animate-pulse" />
+                    </div>
 
-            {/* Col 3: Banking & Contact details */}
-            <div className="lg:col-span-4 space-y-4">
-              <h4 className="text-stone-200 font-semibold text-xs uppercase tracking-wider">Giao Dịch & Liên Hệ</h4>
-              <ul className="space-y-3 text-xs leading-relaxed">
-                <li className="p-3.5 rounded-xl bg-stone-900/50 border border-stone-800/80 space-y-2">
-                  <span className="text-amber-500 font-bold text-[11px] block uppercase tracking-wider">Tài Khoản Ngân Hàng Doanh Nghiệp</span>
-                  <div className="text-xs space-y-1">
-                    <div className="flex justify-between">
-                      <span className="text-stone-400">Số tài khoản:</span>
-                      <strong className="text-stone-200 font-mono tracking-wide">7919399999</strong>
+                    <div className="space-y-2">
+                      <h3 className="text-lg font-black text-rose-400 uppercase tracking-wider">Phần mềm đã hết hạn sử dụng</h3>
+                      <p className="text-xs text-stone-400 leading-relaxed max-w-md mx-auto">
+                        Cửa hàng <strong className="text-stone-200">"{trialInfo.shopName}"</strong> đã hết thời gian trải nghiệm dùng thử 20 ngày hoặc bị tạm ngưng hoạt động trên hệ thống KiotX SaaS.
+                      </p>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-stone-400">Ngân hàng:</span>
-                      <strong className="text-stone-200">MB BANK (Ngân hàng Quân Đội)</strong>
+
+                    {/* Support Info Box */}
+                    <div className="bg-stone-950 border border-stone-850 p-4 rounded-2xl space-y-3.5 text-left max-w-md mx-auto">
+                      <span className="text-[10px] text-stone-500 uppercase font-black tracking-wider block">Thông tin liên hệ gia hạn</span>
+                      <div className="space-y-2.5">
+                        <div className="flex items-center gap-2.5">
+                          <div className="h-7 w-7 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+                            <User className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-stone-500 block leading-none mb-0.5">Đại diện Admin phân phối</span>
+                            <span className="text-xs font-bold text-stone-200">Trương Công Bảo</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2.5">
+                          <div className="h-7 w-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                            <Mail className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-stone-500 block leading-none mb-0.5">Email liên hệ hỗ trợ</span>
+                            <span className="text-xs font-mono font-bold text-stone-200">congbaotruong8@gmail.com</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-stone-400">Chủ tài khoản:</span>
-                      <span className="text-stone-300 font-medium text-[10px] text-right uppercase">CT TNHH TK & TC NT TRUONG GIA PHAT</span>
+
+                    {/* Action Buttons */}
+                    <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-md mx-auto">
+                      <button
+                        onClick={() => setIsOpenTrialModal(true)}
+                        className="w-full sm:flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 text-stone-100 font-black text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-md shadow-indigo-600/10 flex items-center justify-center gap-2"
+                      >
+                        <Sparkles className="h-4 w-4 animate-pulse text-amber-300" />
+                        <span>Gia hạn / Kích hoạt PRO</span>
+                      </button>
+
+                      <button
+                        onClick={handleLogout}
+                        className="w-full sm:w-auto px-6 py-3 bg-stone-950 border border-stone-800 hover:bg-stone-850 text-stone-400 hover:text-stone-200 font-bold text-xs uppercase tracking-wider rounded-xl transition-colors cursor-pointer"
+                      >
+                        Đăng xuất
+                      </button>
                     </div>
                   </div>
-                </li>
-                <li className="flex items-start gap-2.5 pt-1">
-                  <Mail className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="text-stone-300 block">Email Liên Hệ</strong>
-                    <a href="mailto:noithattruonggiaphat@gmail.com" className="text-stone-400 hover:text-amber-500 font-mono">noithattruonggiaphat@gmail.com</a>
-                  </div>
-                </li>
-                <li className="flex items-start gap-2.5">
-                  <Phone className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="text-stone-300 block">Hotline Tư Vấn / Zalo 24/7</strong>
-                    <a href="tel:0901234567" className="text-amber-500 font-bold hover:underline">090.123.4567</a>
-                  </div>
-                </li>
-              </ul>
-            </div>
+                </motion.div>
+              ) : !isTabAllowed(activeTab, currentStaff) ? (
+                <motion.div
+                  key="restricted"
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -15 }}
+                  transition={{ duration: 0.2, ease: "easeInOut" }}
+                >
+                  <KiotRestrictedView
+                    activeTab={activeTab}
+                    currentStaff={currentStaff}
+                    onLogout={handleLogout}
+                    onSwitchToOwner={() => handleSelectSimulatedStaff(staff.find(s => s.role === "OWNER") || staff[0])}
+                    onSwitchToManager={() => handleSelectSimulatedStaff(staff.find(s => s.role === "MANAGER") || staff[0])}
+                  />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key={activeTab}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                >
+                  {activeTab === "dashboard" && (
+                    <KiotDashboard 
+                      products={products} 
+                      invoices={invoices} 
+                      categories={categories}
+                      currentStaff={currentStaff!}
+                      staffList={staff}
+                      systemLogs={systemLogs}
+                      onNavigateToTab={setActiveTab}
+                      onCancelInvoice={handleCancelInvoice}
+                      onUpdateInvoice={handleUpdateInvoice}
+                      customers={customers}
+                      suppliers={suppliers}
+                      settings={settings}
+                      onDeleteReportsData={handleDeleteReportsData}
+                    />
+                  )}
+
+                  {activeTab === "pos" && (
+                    <KiotPOS
+                      products={products}
+                      customers={customers}
+                      settings={settings}
+                      suppliers={suppliers}
+                      onAddInvoice={handleAddInvoice}
+                      onAddCustomer={(newC) => saveCustomers([newC, ...customers])}
+                      onUpdateProductStock={handleUpdateProductStock}
+                    />
+                  )}
+
+                  {activeTab === "products" && (
+                    <KiotProducts
+                      products={products}
+                      categories={categories}
+                      audits={audits}
+                      purchaseOrders={purchaseOrders}
+                      suppliers={suppliers}
+                      currentStaff={currentStaff}
+                      onAddProduct={(newP) => saveProducts([newP, ...products])}
+                      onEditProduct={(editP) => saveProducts(products.map(p => p.id === editP.id ? editP : p))}
+                      onImportProducts={(imported) => saveProducts(imported)}
+                      onDeleteProduct={(delId) => saveProducts(products.filter(p => p.id !== delId))}
+                      onAddCategory={(newC) => saveCategories([newC, ...categories])}
+                      onAddAudit={(newA) => saveAudits([newA, ...audits])}
+                      onApplyAuditStock={(audit) => {
+                        // Update stock value of each target product based on physical count audit results
+                        const updatedProds = products.map(p => {
+                          const auditItem = audit.items.find(i => i.productId === p.id);
+                          if (auditItem) {
+                            return { ...p, stock: auditItem.actualQty };
+                          }
+                          return p;
+                        });
+                        saveProducts(updatedProds);
+                      }}
+                      onAddPurchaseOrder={(newPo) => {
+                        savePurchaseOrders([newPo, ...purchaseOrders]);
+                        
+                        // Calculate new cost prices using Weighted Average Cost and increase stock levels
+                        const updatedProds = products.map(p => {
+                          const poItem = newPo.items.find(i => i.productId === p.id);
+                          if (poItem) {
+                            const oldStock = Math.max(0, p.stock);
+                            const importedQty = poItem.quantity;
+                            const oldCost = p.costPrice || 0;
+                            const importPrice = poItem.costPrice;
+
+                            // Formula: ((oldStock * oldCost) + (importedQty * importPrice)) / (oldStock + importedQty)
+                            const newCost = (oldStock + importedQty) > 0
+                              ? ((oldStock * oldCost) + (importedQty * importPrice)) / (oldStock + importedQty)
+                              : importPrice;
+
+                            return {
+                              ...p,
+                              stock: oldStock + importedQty,
+                              costPrice: Math.round(newCost)
+                            };
+                          }
+                          return p;
+                        });
+                        saveProducts(updatedProds);
+
+                        // Track supplier debt if goods were purchased on credit
+                        if (newPo.amountOwed > 0 && newPo.supplierId) {
+                          const updatedSuppliers = suppliers.map(s => {
+                            if (s.id === newPo.supplierId) {
+                              return {
+                                ...s,
+                                debt: (s.debt || 0) + newPo.amountOwed
+                              };
+                            }
+                            return s;
+                          });
+                          saveSuppliers(updatedSuppliers);
+                        }
+                      }}
+                    />
+                  )}
+
+                  {activeTab === "partners" && (
+                    <KiotPartners
+                      customers={customers}
+                      suppliers={suppliers}
+                      currentStaff={currentStaff!}
+                      onAddCustomer={(newC) => saveCustomers([newC, ...customers])}
+                      onEditCustomer={(editC) => saveCustomers(customers.map(c => c.id === editC.id ? editC : c))}
+                      onDeleteCustomer={(delId) => saveCustomers(customers.filter(c => c.id !== delId))}
+                      onAddSupplier={(newS) => saveSuppliers([newS, ...suppliers])}
+                      onEditSupplier={(editS) => saveSuppliers(suppliers.map(s => s.id === editS.id ? editS : s))}
+                      onDeleteSupplier={(delId) => saveSuppliers(suppliers.filter(s => s.id !== delId))}
+                      onAddCashbookEntry={(entry) => saveCashbook([entry, ...cashbook])}
+                    />
+                  )}
+
+                  {activeTab === "cashbook" && (
+                    <KiotCashbook
+                      cashbook={cashbook}
+                      currentStaff={currentStaff!}
+                      onAddEntry={(newEntry) => saveCashbook([newEntry, ...cashbook])}
+                      cashShifts={cashShifts}
+                      onSaveShifts={(updatedShifts) => saveCashShifts(updatedShifts)}
+                      invoices={invoices}
+                    />
+                  )}
+
+
+
+                  {activeTab === "settings" && settings && (
+                    <KiotSettings
+                      settings={settings}
+                      staff={staff}
+                      currentStaff={currentStaff!}
+                      onUpdateSettings={saveSettings}
+                      onAddStaff={(newS) => saveStaff([...staff, newS])}
+                      onUpdateStaff={(editS) => saveStaff(staff.map(s => s.id === editS.id ? editS : s))}
+                      onDeleteStaff={(delId) => saveStaff(staff.filter(s => s.id !== delId))}
+                      products={products}
+                      categories={categories}
+                      customers={customers}
+                      suppliers={suppliers}
+                      invoices={invoices}
+                      audits={audits}
+                      onRestoreBackup={handleRestoreBackup}
+                      onRestoreFromPostgres={handleRestoreFromPostgres}
+                      isOnline={isOnline}
+                      isSyncingAll={isSyncingAll}
+                      triggerSyncAll={triggerSyncAll}
+                      lastSyncTime={lastSyncTime}
+                      autoSyncEnabled={autoSyncEnabled}
+                      onToggleAutoSync={handleToggleAutoSync}
+                    />
+                  )}
+
+                  {activeTab === "trials_manager" && currentStaff?.email?.toLowerCase() === "congbaotruong8@gmail.com" && (
+                    <KiotTrialsManager
+                      trials={trialRegistrations}
+                      onUpdateTrialStatus={handleUpdateTrialStatus}
+                      onExtendTrial={handleExtendTrial}
+                      onSetTrialExpirationDate={handleSetTrialExpirationDate}
+                      onDeleteTrial={handleDeleteTrial}
+                      onUpdateTrialPassword={handleUpdateTrialPassword}
+                    />
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
-          {/* Footer Bottom copyright */}
-          <div className="flex flex-col sm:flex-row items-center justify-between pt-8 text-[11px] text-stone-600 gap-4">
-            <div>
-              © 2026 CÔNG TY TNHH THIẾT KẾ & THI CÔNG NỘI THẤT TRƯƠNG GIA PHÁT. Tất cả các quyền được bảo lưu.
+          {/* LOWER STATUS INFORMATION BAR (Architectural honesty, clean footer) */}
+          <footer className={`border-t px-6 py-4 flex flex-col md:flex-row items-center justify-between text-[11px] font-mono tracking-wider ${
+            theme === "dark" ? "bg-stone-900/40 border-stone-850 text-stone-500" : "bg-stone-50 border-stone-200 text-stone-500"
+          }`}>
+            <div className="flex flex-wrap gap-4 items-center justify-center md:justify-start">
+              <span className="flex items-center gap-1">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                <span>AES-256 Mã Hóa Thiết Bị</span>
+              </span>
+              <span>•</span>
+              <span>Cơ sở dữ liệu cục bộ: <strong className="text-emerald-400">Đang chạy ({products.length} sản phẩm, {invoices.length} hóa đơn)</strong></span>
             </div>
-            <div className="flex items-center gap-1.5 text-stone-600">
-              <span>Được xây dựng với tình yêu</span>
-              <Heart className="h-3 w-3 text-rose-500 fill-rose-500" />
-              <span>tối ưu hoàn hảo trên thiết bị di động.</span>
+
+            <div className="flex items-center gap-1 mt-2 md:mt-0 text-[10px]">
+              <span>Thiết kế bởi Trương Công Bảo</span>
+              <Heart className="h-3 w-3 text-rose-500 fill-rose-500 animate-pulse" />
+              <span>&copy; 2026 KiotX Inc.</span>
             </div>
-          </div>
-        </div>
-      </footer>
+          </footer>
 
-      {/* 10. AI Architect Chatbot Drawer */}
-      <Chatbox
-        isOpen={isChatOpen}
-        onClose={() => setIsChatOpen(false)}
-        externalPrompt={chatPrompt}
-        onClearExternalPrompt={handleClearExternalPrompt}
-      />
+        </main>
+      </div>
 
-      {/* Admin Dashboard overlay panel */}
-      {isAdminOpen && (
-        <AdminDashboard 
-          onClose={() => setIsAdminOpen(false)} 
-          onPostCreatedOrModified={() => setBlogRefreshKey(prev => prev + 1)}
-          onOpenChatWithPrompt={handleOpenChatWithPrompt}
-        />
+      {/* FLOATING ACTION TRIGGER FOR AI CO-PILOT CHATBOX */}
+      {!isChatOpen && activeTab !== "pos" && (
+        <button
+          onClick={() => setIsChatOpen(true)}
+          className="fixed bottom-6 right-6 h-12 w-12 rounded-full bg-emerald-500 text-stone-950 flex items-center justify-center shadow-lg shadow-emerald-500/20 hover:scale-105 active:scale-95 transition-all cursor-pointer z-40 border border-emerald-400"
+          title="Trò chuyện với Trợ lý AI Co-Pilot"
+        >
+          <Bot className="h-5.5 w-5.5 animate-pulse" />
+        </button>
       )}
 
-      {/* 11. Floating Zalo & Phone buttons */}
-      <FloatingContact onOpenChat={() => setIsChatOpen(true)} />
+      {/* AI CHATBOX COMPONENT DRAWED ON RIGHT */}
+      <Chatbox 
+        isOpen={isChatOpen} 
+        onClose={() => setIsChatOpen(false)} 
+        currentStaff={currentStaff}
+        products={products}
+        invoices={invoices}
+        settings={settings}
+        cashbook={cashbook}
+        projects={projects}
+      />
+
+      {/* TRIAL EXTENSION SELF-SERVICE MODAL */}
+      <TrialExtensionModal
+        isOpen={isOpenTrialModal}
+        onClose={() => setIsOpenTrialModal(false)}
+        trialInfo={trialInfo}
+        onExtendTrial={handleExtendTrial}
+        onUpdateTrialStatus={handleUpdateTrialStatus}
+      />
+
+      {/* CUSTOM DB RESET CONFIRMATION MODAL (Prevents Iframe blocking & supports Time-Travel Rollback) */}
+      <AnimatePresence>
+        {showResetConfirmModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-stone-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              className="bg-stone-900 border border-stone-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 overflow-hidden relative"
+            >
+              {/* Top Warning Strip */}
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-rose-500 via-amber-500 to-emerald-500" />
+
+              <div className="flex items-start gap-4">
+                <div className="h-10 w-10 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-500 shrink-0 mt-0.5">
+                  <XCircle className="h-5 w-5" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-xs font-black text-stone-100 uppercase tracking-widest flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
+                    Quản Lý & Phục Hồi Dữ Liệu
+                  </h3>
+                  <p className="text-xs text-stone-400">
+                    Cửa hàng: <span className="text-stone-200 font-bold">{trialInfo?.shopName || "KiotX Demo Store"}</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Informative block about what "initial" is */}
+              <div className="text-[11px] bg-stone-950/60 border border-stone-850 p-3 rounded-xl text-stone-400 space-y-1">
+                <p className="font-bold text-stone-300">💡 Giải thích mốc thời gian "Mặc định / Ban đầu":</p>
+                <p>
+                  Mốc thời gian ban đầu của bạn là lúc đăng ký tài khoản dùng thử KiotX:{" "}
+                  <strong className="text-amber-400">
+                    {formatVNDate(trialInfo?.createdAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())}
+                  </strong>.
+                </p>
+                <p className="text-stone-500 text-[10px]">
+                  Mọi dữ liệu hóa đơn, danh mục, và sổ quỹ phát sinh sau thời điểm này đều là dữ liệu mới tạo trong quá trình trải nghiệm của bạn.
+                </p>
+              </div>
+
+              {/* Mode Switch Tabs */}
+              <div className="grid grid-cols-2 p-1 bg-stone-950 rounded-xl border border-stone-850">
+                <button
+                  type="button"
+                  onClick={() => setResetType("hard")}
+                  className={`py-1.5 px-3 text-center text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                    resetType === "hard"
+                      ? "bg-rose-500/15 text-rose-400 border border-rose-500/20"
+                      : "text-stone-400 hover:text-stone-200"
+                  }`}
+                >
+                  Wipe Sạch Toàn Bộ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResetType("selective")}
+                  className={`py-1.5 px-3 text-center text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                    resetType === "selective"
+                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+                      : "text-stone-400 hover:text-stone-200"
+                  }`}
+                >
+                  Quay Ngược Thời Gian
+                </button>
+              </div>
+
+              {/* Reset Content Fields */}
+              {resetType === "hard" ? (
+                <div className="space-y-3">
+                  <div className="bg-rose-950/20 border border-rose-900/30 rounded-xl p-3.5 space-y-2">
+                    <span className="text-[10px] text-rose-400 font-bold uppercase tracking-wider block">
+                      ⚠️ Cảnh báo xóa sạch (Hard Reset):
+                    </span>
+                    <p className="text-[11px] text-stone-400 leading-relaxed">
+                      Lựa chọn này sẽ xóa toàn bộ dữ liệu hiện tại (gồm cả sản phẩm, danh mục, khách hàng, nhà cung cấp) và trả hệ thống về một trang giấy trắng trống trơn lúc vừa đăng ký tài khoản.
+                    </p>
+                    <ul className="text-[11px] text-stone-500 space-y-1 list-disc pl-4 leading-relaxed font-medium">
+                      <li>Khởi tạo lại danh mục rỗng sạch sẽ để nhập hàng mới</li>
+                      <li>Xóa sạch toàn bộ hóa đơn đã bán & lịch sử doanh thu</li>
+                      <li>Khôi phục sổ quỹ, công nợ và tất cả các nhật ký làm việc</li>
+                    </ul>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="bg-emerald-950/10 border border-emerald-900/20 rounded-xl p-3.5 space-y-2">
+                    <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider block">
+                      🕒 Quay ngược thời gian giữ nguyên danh mục:
+                    </span>
+                    <p className="text-[11px] text-stone-400 leading-relaxed">
+                      Giúp phục hồi/quay lại trạng thái dữ liệu tại một giờ hoặc ngày nhất định. Hệ thống sẽ <strong className="text-emerald-400">giữ nguyên</strong> danh mục sản phẩm, danh sách khách hàng và chỉ xóa bỏ hoặc thu hồi các giao dịch, hóa đơn bán lẻ, thu chi sổ quỹ phát sinh <strong className="text-rose-400">sau mốc thời gian</strong> được chọn.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <span className="text-[10px] text-stone-400 font-bold uppercase tracking-wider block">
+                      Chọn điểm phục hồi (Checkpoint):
+                    </span>
+
+                    <div className="grid grid-cols-1 gap-2">
+                      {/* Checkpoint 1: Registration Time */}
+                      <label className={`flex items-start gap-3 p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        selectedCheckpoint === "registration" 
+                          ? "bg-stone-850 border-emerald-500/40 text-stone-100" 
+                          : "bg-stone-950/40 border-stone-850 hover:bg-stone-850/60 text-stone-400"
+                      }`}>
+                        <input
+                          type="radio"
+                          name="checkpoint"
+                          checked={selectedCheckpoint === "registration"}
+                          onChange={() => setSelectedCheckpoint("registration")}
+                          className="mt-1 accent-emerald-500 cursor-pointer"
+                        />
+                        <div className="text-[11px]">
+                          <p className="font-bold text-stone-200">Lúc đăng ký cửa hàng</p>
+                          <p className="text-stone-500">
+                            {formatVNDate(trialInfo?.createdAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())} (Chỉ xóa giao dịch mới phát sinh)
+                          </p>
+                        </div>
+                      </label>
+
+                      {/* Checkpoint 2: 1 Hour ago */}
+                      <label className={`flex items-start gap-3 p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        selectedCheckpoint === "1hour" 
+                          ? "bg-stone-850 border-emerald-500/40 text-stone-100" 
+                          : "bg-stone-950/40 border-stone-850 hover:bg-stone-850/60 text-stone-400"
+                      }`}>
+                        <input
+                          type="radio"
+                          name="checkpoint"
+                          checked={selectedCheckpoint === "1hour"}
+                          onChange={() => setSelectedCheckpoint("1hour")}
+                          className="mt-1 accent-emerald-500 cursor-pointer"
+                        />
+                        <div className="text-[11px]">
+                          <p className="font-bold text-stone-200">1 giờ trước</p>
+                          <p className="text-stone-500">
+                            {formatVNDate(new Date(Date.now() - 60 * 60 * 1000).toISOString())} (Hữu ích khi lỡ tính sai tiền/hóa đơn hàng loạt vừa xong)
+                          </p>
+                        </div>
+                      </label>
+
+                      {/* Checkpoint 3: Today Start */}
+                      <label className={`flex items-start gap-3 p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        selectedCheckpoint === "today" 
+                          ? "bg-stone-850 border-emerald-500/40 text-stone-100" 
+                          : "bg-stone-950/40 border-stone-850 hover:bg-stone-850/60 text-stone-400"
+                      }`}>
+                        <input
+                          type="radio"
+                          name="checkpoint"
+                          checked={selectedCheckpoint === "today"}
+                          onChange={() => setSelectedCheckpoint("today")}
+                          className="mt-1 accent-emerald-500 cursor-pointer"
+                        />
+                        <div className="text-[11px]">
+                          <p className="font-bold text-stone-200">Đầu ngày hôm nay</p>
+                          <p className="text-stone-500">
+                            00:00 ngày hôm nay (Xóa sạch toàn bộ hóa đơn và thu chi thực hiện trong ngày hôm nay)
+                          </p>
+                        </div>
+                      </label>
+
+                      {/* Checkpoint 4: Yesterday Start */}
+                      <label className={`flex items-start gap-3 p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        selectedCheckpoint === "yesterday" 
+                          ? "bg-stone-850 border-emerald-500/40 text-stone-100" 
+                          : "bg-stone-950/40 border-stone-850 hover:bg-stone-850/60 text-stone-400"
+                      }`}>
+                        <input
+                          type="radio"
+                          name="checkpoint"
+                          checked={selectedCheckpoint === "yesterday"}
+                          onChange={() => setSelectedCheckpoint("yesterday")}
+                          className="mt-1 accent-emerald-500 cursor-pointer"
+                        />
+                        <div className="text-[11px]">
+                          <p className="font-bold text-stone-200">Đầu ngày hôm qua</p>
+                          <p className="text-stone-500">
+                            00:00 ngày hôm qua (Lùi lại 24-48 giờ trước)
+                          </p>
+                        </div>
+                      </label>
+
+                      {/* Checkpoint 5: Custom Time */}
+                      <label className={`flex flex-col gap-2 p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        selectedCheckpoint === "custom" 
+                          ? "bg-stone-850 border-emerald-500/40 text-stone-100" 
+                          : "bg-stone-950/40 border-stone-850 hover:bg-stone-850/60 text-stone-400"
+                      }`}>
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="radio"
+                            name="checkpoint"
+                            checked={selectedCheckpoint === "custom"}
+                            onChange={() => setSelectedCheckpoint("custom")}
+                            className="mt-1 accent-emerald-500 cursor-pointer"
+                          />
+                          <div className="text-[11px]">
+                            <p className="font-bold text-stone-200">Tùy chọn giờ cụ thể</p>
+                            <p className="text-stone-500">Tự nhập tay mốc giờ và ngày bạn muốn quay lui</p>
+                          </div>
+                        </div>
+
+                        {selectedCheckpoint === "custom" && (
+                          <motion.div 
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            className="pl-6 pt-1.5"
+                          >
+                            <input
+                              type="datetime-local"
+                              value={customResetDateTime}
+                              onChange={(e) => setCustomResetDateTime(e.target.value)}
+                              className="bg-stone-950 border border-stone-800 rounded-lg text-xs p-2 text-stone-200 block w-full focus:outline-none focus:border-emerald-500 text-center font-bold"
+                            />
+                          </motion.div>
+                        )}
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={executeResetDatabase}
+                  className={`flex-1 py-2.5 px-4 text-stone-950 font-sans font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-lg ${
+                    resetType === "hard"
+                      ? "bg-rose-500 hover:bg-rose-400 shadow-rose-950/20"
+                      : "bg-emerald-500 hover:bg-emerald-400 shadow-emerald-950/20"
+                  }`}
+                >
+                  Xác nhận khôi phục
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirmModal(false)}
+                  className="flex-1 py-2.5 px-4 bg-stone-800 hover:bg-stone-750 text-stone-400 font-sans font-bold text-xs uppercase tracking-wider rounded-xl border border-stone-750 transition-all cursor-pointer"
+                >
+                  Hủy bỏ
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* GLOBAL HIGH-FIDELITY TOAST NOTIFICATIONS */}
+      <ToastContainer />
 
     </div>
   );
